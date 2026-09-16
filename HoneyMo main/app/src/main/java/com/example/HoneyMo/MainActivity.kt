@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -69,7 +70,7 @@ class MainActivity : ComponentActivity() {
 
         isBootLaunch = intent?.getBooleanExtra("EXTRA_BOOT_LAUNCH", false) == true
         isInterruptedSession = intent?.getBooleanExtra("EXTRA_INTERRUPTED_SESSION", false) == true ||
-            (isBootLaunch && SessionPreferences.wasRecordingActive(this))
+            SessionPreferences.wasRecordingActive(this)
 
         setContent {
             MaterialTheme(
@@ -88,7 +89,8 @@ class MainActivity : ComponentActivity() {
                 ) {
                     ScreenCaptureApp(
                         autoStartPrompt = isBootLaunch,
-                        isInterrupted = isInterruptedSession
+                        isInterrupted = isInterruptedSession,
+                        onResetInterrupted = { isInterruptedSession = false }
                     )
                 }
             }
@@ -101,7 +103,7 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra("EXTRA_BOOT_LAUNCH", false)) {
             isBootLaunch = true
         }
-        if (intent.getBooleanExtra("EXTRA_INTERRUPTED_SESSION", false)) {
+        if (intent.getBooleanExtra("EXTRA_INTERRUPTED_SESSION", false) || SessionPreferences.wasRecordingActive(this)) {
             isInterruptedSession = true
         }
     }
@@ -110,11 +112,23 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun ScreenCaptureApp(
     autoStartPrompt: Boolean = false,
-    isInterrupted: Boolean = false
+    isInterrupted: Boolean = false,
+    onResetInterrupted: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val stats by ScreenCaptureService.statsFlow.collectAsState()
+
+    // Keep screen turned on while actively streaming
+    val activity = context as? Activity
+    DisposableEffect(stats.isStreaming) {
+        if (stats.isStreaming) {
+            activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+        onDispose {
+            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
 
     var showPermissionDeniedDialog by remember { mutableStateOf(false) }
 
@@ -122,6 +136,103 @@ fun ScreenCaptureApp(
     var isBatteryOptIgnored by remember {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
+    }
+
+    // Camera & Overlay permissions for Selfie Face Cam
+    var hasCameraPermission by remember {
+        mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+    }
+    var canDrawOverlays by remember {
+        mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context))
+    }
+    var isFaceCamEnabled by remember {
+        mutableStateOf(SessionPreferences.isFaceCamEnabled(context))
+    }
+
+    val overlayPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        canDrawOverlays = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
+    }
+
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasCameraPermission = isGranted
+        if (isGranted) {
+            isFaceCamEnabled = true
+            SessionPreferences.setFaceCamEnabled(context, true)
+            Toast.makeText(context, "Camera permission granted. Face Cam enabled by default.", Toast.LENGTH_SHORT).show()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
+                try {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:${context.packageName}")
+                    )
+                    overlayPermissionLauncher.launch(intent)
+                } catch (e: Exception) {
+                    Log.w("MainActivity", "Failed overlay launcher: ${e.message}")
+                }
+            }
+
+            val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
+            if (isServiceActive) {
+                val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                    action = ScreenCaptureService.ACTION_TOGGLE_FACECAM
+                    putExtra(ScreenCaptureService.EXTRA_ENABLE_FACECAM, true)
+                }
+                context.startService(intent)
+            }
+        } else {
+            Toast.makeText(context, "Camera permission is required for Face Cam", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    var selectedFacing by remember {
+        mutableStateOf(SessionPreferences.getCameraFacing(context))
+    }
+
+    LaunchedEffect(stats.cameraFacing) {
+        selectedFacing = stats.cameraFacing
+    }
+
+    fun switchCamera() {
+        val newFacing = if (selectedFacing == SessionPreferences.CAMERA_FACING_FRONT) {
+            SessionPreferences.CAMERA_FACING_BACK
+        } else {
+            SessionPreferences.CAMERA_FACING_FRONT
+        }
+        selectedFacing = newFacing
+        SessionPreferences.setCameraFacing(context, newFacing)
+
+        val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
+        if (isServiceActive) {
+            val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                action = ScreenCaptureService.ACTION_SWITCH_CAMERA
+                putExtra(ScreenCaptureService.EXTRA_CAMERA_FACING, newFacing)
+            }
+            context.startService(intent)
+        }
+        val label = if (newFacing == SessionPreferences.CAMERA_FACING_BACK) "Back Camera (Main)" else "Front Camera (Selfie)"
+        Toast.makeText(context, "Switched to $label", Toast.LENGTH_SHORT).show()
+    }
+
+    fun toggleFaceCam() {
+        val newEnabled = !isFaceCamEnabled
+        isFaceCamEnabled = newEnabled
+        SessionPreferences.setFaceCamEnabled(context, newEnabled)
+
+        val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
+        if (isServiceActive) {
+            val intent = Intent(context, ScreenCaptureService::class.java).apply {
+                action = ScreenCaptureService.ACTION_TOGGLE_FACECAM
+                putExtra(ScreenCaptureService.EXTRA_ENABLE_FACECAM, newEnabled)
+            }
+            context.startService(intent)
+        }
+        val msg = if (newEnabled) "Face Cam enabled" else "Face Cam disabled"
+        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
     }
 
     // Screen capture permission launcher
@@ -168,6 +279,7 @@ fun ScreenCaptureApp(
                 putExtra(ScreenCaptureService.EXTRA_DENSITY, metrics.densityDpi)
                 putExtra(ScreenCaptureService.EXTRA_FPS, FIXED_FPS)
                 putExtra(ScreenCaptureService.EXTRA_BITRATE, FIXED_BITRATE)
+                putExtra(ScreenCaptureService.EXTRA_ENABLE_FACECAM, isFaceCamEnabled && hasCameraPermission)
             }
 
             ContextCompat.startForegroundService(context, serviceIntent)
@@ -179,7 +291,7 @@ fun ScreenCaptureApp(
         }
     }
 
-    // Permissions launcher for Notifications and Audio Recording
+    // Permissions launcher for Notifications
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { _ ->
@@ -194,9 +306,6 @@ fun ScreenCaptureApp(
                 permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
-        }
 
         if (permissionsToRequest.isNotEmpty()) {
             permissionsLauncher.launch(permissionsToRequest.toTypedArray())
@@ -208,8 +317,12 @@ fun ScreenCaptureApp(
     }
 
     fun stopStreaming() {
+        onResetInterrupted()
+        showPermissionDeniedDialog = false
+        SessionPreferences.setRecordingActive(context, false)
         val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.cancel(BootReceiver.RECOVERY_NOTIFICATION_ID)
+        nm.cancel(ScreenCaptureService.NOTIFICATION_ID)
         val serviceIntent = Intent(context, ScreenCaptureService::class.java).apply {
             action = ScreenCaptureService.ACTION_STOP
         }
@@ -344,28 +457,42 @@ fun ScreenCaptureApp(
                 ) {
                     Text("Stream Status", fontWeight = FontWeight.SemiBold, color = Color(0xFF94A3B8))
 
+                    val badgeColor = when {
+                        stats.isStreaming -> Color(0xFF10B981)
+                        stats.isPausedForLock || ScreenCaptureService.isRunning -> Color(0xFFF59E0B)
+                        else -> Color(0xFFEF4444)
+                    }
+                    val badgeBg = when {
+                        stats.isStreaming -> Color(0x2610B981)
+                        stats.isPausedForLock || ScreenCaptureService.isRunning -> Color(0x26F59E0B)
+                        else -> Color(0x26EF4444)
+                    }
+                    val badgeText = when {
+                        stats.isStreaming -> "STREAMING"
+                        stats.isPausedForLock || ScreenCaptureService.isRunning -> "PAUSED (SCREEN OFF)"
+                        else -> "IDLE"
+                    }
+
                     // Status Badge
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         modifier = Modifier
                             .clip(RoundedCornerShape(20.dp))
-                            .background(
-                                if (stats.isStreaming) Color(0x2610B981) else Color(0x26EF4444)
-                            )
+                            .background(badgeBg)
                             .padding(horizontal = 10.dp, vertical = 4.dp)
                     ) {
                         Box(
                             modifier = Modifier
                                 .size(8.dp)
                                 .clip(CircleShape)
-                                .background(if (stats.isStreaming) Color(0xFF10B981) else Color(0xFFEF4444))
+                                .background(badgeColor)
                         )
                         Text(
-                            text = if (stats.isStreaming) "STREAMING" else "IDLE",
+                            text = badgeText,
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
-                            color = if (stats.isStreaming) Color(0xFF10B981) else Color(0xFFEF4444)
+                            color = badgeColor
                         )
                     }
                 }
@@ -377,6 +504,16 @@ fun ScreenCaptureApp(
                 ) {
                     MetricItem(label = "Server", value = if (stats.isConnectedToServer) "Connected" else "Offline")
                     MetricItem(label = "Live FPS", value = "${stats.currentFps} fps")
+                    MetricItem(
+                        label = "Camera",
+                        value = if (stats.isFaceCamActive) {
+                            if (selectedFacing == SessionPreferences.CAMERA_FACING_BACK) "Back (1/4)" else "Front (1/4)"
+                        } else if (hasCameraPermission && isFaceCamEnabled) {
+                            "Ready"
+                        } else {
+                            "Off"
+                        }
+                    )
                     MetricItem(
                         label = "Data Sent",
                         value = "%.1f MB".format(stats.bytesSent / (1024f * 1024f))
@@ -414,6 +551,215 @@ fun ScreenCaptureApp(
                     MetricItem(label = "Resolution", value = "540p")
                     MetricItem(label = "Frame Rate", value = "15 FPS")
                     MetricItem(label = "Bitrate", value = "1.0 Mbps")
+                }
+            }
+        }
+
+        // Face Cam / Camera Control Card
+        Card(
+            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(if (selectedFacing == SessionPreferences.CAMERA_FACING_BACK) "📷" else "🤳", fontSize = 18.sp)
+                        Text(
+                            text = "Camera Overlay",
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color.White,
+                            fontSize = 15.sp
+                        )
+                    }
+
+                    if (hasCameraPermission) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            // Facing badge
+                            val isBack = selectedFacing == SessionPreferences.CAMERA_FACING_BACK
+                            val facingColor = if (isBack) Color(0xFFF59E0B) else Color(0xFF818CF8)
+                            val facingBg = if (isBack) Color(0x26F59E0B) else Color(0x26818CF8)
+                            Text(
+                                text = if (isBack) "BACK" else "FRONT",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = facingColor,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(facingBg)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+
+                            // On/Off status badge
+                            val badgeColor = if (isFaceCamEnabled) Color(0xFF10B981) else Color(0xFF94A3B8)
+                            val badgeBg = if (isFaceCamEnabled) Color(0x2610B981) else Color(0x2694A3B8)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(badgeBg)
+                                    .padding(horizontal = 8.dp, vertical = 3.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(6.dp)
+                                        .clip(CircleShape)
+                                        .background(badgeColor)
+                                )
+                                Text(
+                                    text = if (isFaceCamEnabled) "ON" else "OFF",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = badgeColor
+                                )
+                            }
+                        }
+                    }
+                }
+
+                if (!hasCameraPermission) {
+                    Text(
+                        text = "Stream your front or back camera in the bottom-left corner (1/4th screen width) directly above your screen stream.",
+                        color = Color(0xFF94A3B8),
+                        fontSize = 13.sp
+                    )
+                    Button(
+                        onClick = {
+                            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("ENABLE CAMERA (ALLOW PERMISSION)", fontWeight = FontWeight.Bold)
+                    }
+                } else {
+                    Text(
+                        text = if (isFaceCamEnabled) {
+                            val camName = if (selectedFacing == SessionPreferences.CAMERA_FACING_BACK) "Back camera" else "Front selfie camera"
+                            "$camName streams at 1/4th screen width (bottom-left) above screen stream. Auto-switches if one fails."
+                        } else {
+                            "Camera overlay is turned off. Screen stream only."
+                        },
+                        color = Color(0xFF94A3B8),
+                        fontSize = 13.sp
+                    )
+
+                    // Notice if camera was automatically switched due to failure
+                    stats.cameraNotice?.let { notice ->
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF2E2619)),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "ℹ️ $notice",
+                                color = Color(0xFFFDE68A),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
+                    }
+
+                    // Overlay permission check for Android 6+
+                    if (!canDrawOverlays && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color(0xFF2E2619)),
+                            shape = RoundedCornerShape(10.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "Floating overlay permission required",
+                                    color = Color(0xFFFBBF24),
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Button(
+                                    onClick = {
+                                        try {
+                                            val intent = Intent(
+                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                                Uri.parse("package:${context.packageName}")
+                                            )
+                                            overlayPermissionLauncher.launch(intent)
+                                        } catch (e: Exception) {
+                                            Log.w("MainActivity", "Failed overlay launcher: ${e.message}")
+                                        }
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Grant", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                    }
+
+                    // Camera Switcher Button (Switch between Front / Selfie and Back / Main)
+                    Button(
+                        onClick = { switchCamera() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4F46E5)),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (selectedFacing == SessionPreferences.CAMERA_FACING_FRONT) {
+                                "🔄 SWITCH TO BACK CAMERA"
+                            } else {
+                                "🔄 SWITCH TO FRONT (SELFIE) CAMERA"
+                            },
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
+                    // Toggle Button: "DISABLE CAMERA" when active, "ADD FACE / CAMERA" when disabled
+                    Button(
+                        onClick = {
+                            if (!canDrawOverlays && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                try {
+                                    val intent = Intent(
+                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                                        Uri.parse("package:${context.packageName}")
+                                    )
+                                    overlayPermissionLauncher.launch(intent)
+                                } catch (e: Exception) {
+                                    toggleFaceCam()
+                                }
+                            } else {
+                                toggleFaceCam()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isFaceCamEnabled) Color(0xFF334155) else Color(0xFF10B981)
+                        ),
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = if (isFaceCamEnabled) "DISABLE CAMERA OVERLAY" else "ADD FACE / CAMERA",
+                            fontWeight = FontWeight.Bold,
+                            color = if (isFaceCamEnabled) Color(0xFFF8FAFC) else Color.White
+                        )
+                    }
                 }
             }
         }
@@ -463,9 +809,10 @@ fun ScreenCaptureApp(
         Spacer(modifier = Modifier.weight(1f, fill = false))
 
         // Action Button (Start / Stop)
+        val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
         Button(
             onClick = {
-                if (stats.isStreaming) {
+                if (isServiceActive) {
                     stopStreaming()
                 } else {
                     startStreaming()
@@ -476,11 +823,11 @@ fun ScreenCaptureApp(
                 .height(56.dp),
             shape = RoundedCornerShape(14.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = if (stats.isStreaming) Color(0xFFEF4444) else Color(0xFF6366F1)
+                containerColor = if (isServiceActive) Color(0xFFEF4444) else Color(0xFF6366F1)
             )
         ) {
             Text(
-                text = if (stats.isStreaming) "STOP SCREEN SHARING" else "START SCREEN CAPTURE",
+                text = if (isServiceActive) "STOP SCREEN SHARING" else "START SCREEN CAPTURE",
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp,
                 color = Color.White

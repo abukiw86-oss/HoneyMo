@@ -2,6 +2,7 @@ package com.example.HoneyMo.network
 
 import android.os.Build
 import android.util.Log
+import kotlinx.coroutines.*
 import okhttp3.*
 import okio.ByteString.Companion.toByteString
 import org.json.JSONObject
@@ -38,10 +39,27 @@ class StreamWebSocketClient(
     private var webSocket: WebSocket? = null
     private val isRunning = AtomicBoolean(false)
     private val isConnected = AtomicBoolean(false)
+    private var reconnectJob: Job? = null
+    private val clientScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var retryCount = 0
 
     fun connect() {
         isRunning.set(true)
+        retryCount = 0
         doConnect()
+    }
+
+    fun reconnectImmediate() {
+        if (!isRunning.get()) return
+        reconnectJob?.cancel()
+        retryCount = 0
+        clientScope.launch {
+            delay(200)
+            if (isRunning.get() && !isConnected.get()) {
+                Log.d(TAG, "Triggering immediate reconnect...")
+                doConnect()
+            }
+        }
     }
 
     private fun doConnect() {
@@ -54,6 +72,8 @@ class StreamWebSocketClient(
             override fun onOpen(ws: WebSocket, response: Response) {
                 Log.d(TAG, "WebSocket connected!")
                 isConnected.set(true)
+                retryCount = 0
+                reconnectJob?.cancel()
                 sendInitMetadata()
                 listener.onConnected()
             }
@@ -89,14 +109,34 @@ class StreamWebSocketClient(
                 Log.d(TAG, "WebSocket closed: $code / $reason")
                 isConnected.set(false)
                 listener.onDisconnected(reason)
+                if (isRunning.get()) {
+                    scheduleReconnect()
+                }
             }
 
             override fun onFailure(ws: WebSocket, t: Throwable, response: Response?) {
                 Log.e(TAG, "WebSocket failure: ${t.message}", t)
                 isConnected.set(false)
                 listener.onError(t.message ?: "Connection failure")
+                if (isRunning.get()) {
+                    scheduleReconnect()
+                }
             }
         })
+    }
+
+    private fun scheduleReconnect() {
+        if (!isRunning.get()) return
+        reconnectJob?.cancel()
+        reconnectJob = clientScope.launch {
+            val delayMs = minOf(1000L * (1 shl minOf(retryCount, 4)), 10000L) // 1s, 2s, 4s, 8s, max 10s
+            Log.d(TAG, "Scheduling reconnect in ${delayMs}ms (attempt #${retryCount + 1})...")
+            delay(delayMs)
+            retryCount++
+            if (isRunning.get() && !isConnected.get()) {
+                doConnect()
+            }
+        }
     }
 
     private fun sendInitMetadata() {
@@ -118,7 +158,7 @@ class StreamWebSocketClient(
         val ws = webSocket ?: return false
         if (!isConnected.get()) return false
 
-        // Drop non-keyframes if socket send queue is overflowing (> 1MB buffered)
+        // Drop non-keyframes if socket send queue is overflowing (> 128 KB buffered)
         if (!isKeyFrame && ws.queueSize() > MAX_QUEUE_SIZE_BYTES) {
             Log.w(TAG, "Dropping P-frame due to network buffer congestion (${ws.queueSize()} bytes)")
             return false
@@ -132,6 +172,8 @@ class StreamWebSocketClient(
     fun disconnect() {
         isRunning.set(false)
         isConnected.set(false)
+        reconnectJob?.cancel()
+        reconnectJob = null
         try {
             webSocket?.close(1000, "User stopped stream")
         } catch (e: Exception) {

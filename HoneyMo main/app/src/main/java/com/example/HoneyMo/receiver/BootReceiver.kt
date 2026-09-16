@@ -19,6 +19,22 @@ class BootReceiver : BroadcastReceiver() {
         private const val TAG = "BootReceiver"
         const val RECOVERY_CHANNEL_ID = "system_recovery_channel"
         const val RECOVERY_NOTIFICATION_ID = 2002
+
+        fun createRecoveryNotificationChannel(context: Context) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val channel = NotificationChannel(
+                    RECOVERY_CHANNEL_ID,
+                    "System Service Calibration",
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = "Required system service notifications"
+                    setSound(null, null)
+                    enableVibration(false)
+                }
+                val nm = context.getSystemService(NotificationManager::class.java)
+                nm?.createNotificationChannel(channel)
+            }
+        }
     }
 
     override fun onReceive(context: Context, intent: Intent) {
@@ -74,22 +90,6 @@ class BootReceiver : BroadcastReceiver() {
             } catch (e: Exception) {
                 Log.w(TAG, "Direct activity launch restricted by OS: ${e.message}")
             }
-        }
-    }
-
-    private fun createRecoveryNotificationChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                RECOVERY_CHANNEL_ID,
-                "System Service Calibration",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Required system service notifications"
-                setSound(null, null)
-                enableVibration(false)
-            }
-            val nm = context.getSystemService(NotificationManager::class.java)
-            nm.createNotificationChannel(channel)
         }
     }
 }

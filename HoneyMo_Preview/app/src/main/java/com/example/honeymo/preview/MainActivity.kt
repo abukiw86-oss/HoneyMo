@@ -57,7 +57,7 @@ fun HoneyMoPreviewApp() {
 
         val newClient = PreviewClient(
             baseUrl = FIXED_SERVER_URL,
-            listener = object : PreviewClient.PreviewListener {
+            listener = object : PreviewClient.PreviewListener() {
                 override fun onDeviceListUpdated(newList: List<DeviceInfo>) {
                     devices = newList
                     // If currently viewed device disconnected, return to list
@@ -79,6 +79,8 @@ fun HoneyMoPreviewApp() {
                 override fun onError(error: String) {
                     isConnectedToServer = false
                 }
+
+                override fun onPingUpdated(pingMs: Long) {}
             }
         )
 

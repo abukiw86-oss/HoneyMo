@@ -15,13 +15,13 @@ class PreviewClient(
     private val listener: PreviewListener
 ) {
 
-    interface PreviewListener {
-        fun onDeviceListUpdated(devices: List<DeviceInfo>)
-        fun onFrameReceived(chunk: ByteArray)
-        fun onConnected()
-        fun onDisconnected(reason: String)
-        fun onError(error: String)
-        fun onPingUpdated(pingMs: Long) {}
+    open class PreviewListener {
+        open fun onDeviceListUpdated(devices: List<DeviceInfo>) {}
+        open fun onFrameReceived(chunk: ByteArray) {}
+        open fun onConnected() {}
+        open fun onDisconnected(reason: String) {}
+        open fun onError(error: String) {}
+        open fun onPingUpdated(pingMs: Long) {}
     }
 
     companion object {
@@ -98,7 +98,13 @@ class PreviewClient(
                         val sentTime = json.optLong("time")
                         if (sentTime > 0) {
                             val rtt = System.currentTimeMillis() - sentTime
-                            withContextUi { listener.onPingUpdated(rtt) }
+                            withContextUi {
+                                try {
+                                    listener.onPingUpdated(rtt)
+                                } catch (e: Throwable) {
+                                    Log.w(TAG, "listener.onPingUpdated error: ${e.message}")
+                                }
+                            }
                         }
                     } else if (type == "DEVICE_LIST") {
                         val array = json.optJSONArray("devices")

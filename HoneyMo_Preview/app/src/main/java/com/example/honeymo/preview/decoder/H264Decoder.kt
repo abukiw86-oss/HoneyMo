@@ -22,16 +22,43 @@ class H264Decoder(
 
     private var decoder: MediaCodec? = null
     private val isRunning = AtomicBoolean(false)
+    private var activeSurface: Surface? = null
+    private var cachedConfig: ByteArray? = null
+
     private var outputDrainJob: Job? = null
     private val decoderScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
     private var frameCount = 0
     private var fpsJob: Job? = null
 
+    fun setSurface(surface: Surface) {
+        activeSurface = surface
+        val dec = decoder
+        if (dec != null && isRunning.get()) {
+            try {
+                dec.setOutputSurface(surface)
+                Log.d(TAG, "Successfully attached new surface via setOutputSurface")
+                return
+            } catch (e: Exception) {
+                Log.w(TAG, "setOutputSurface failed (${e.message}), recreating decoder...")
+            }
+        }
+        start(surface)
+    }
+
+    fun clearSurface(surface: Surface) {
+        if (activeSurface == surface) {
+            activeSurface = null
+            Log.d(TAG, "Surface cleared, preserving decoder state")
+        }
+    }
+
     fun start(surface: Surface) {
         if (isRunning.get()) {
             stop()
         }
+
+        activeSurface = surface
 
         try {
             Log.d(TAG, "Starting hardware H.264 decoder with surface (${width}x${height})...")
@@ -55,13 +82,46 @@ class H264Decoder(
             startFpsCounter()
             Log.d(TAG, "Hardware H.264 decoder started successfully")
 
+            // If we have cached SPS/PPS, immediately feed to initialize codec
+            cachedConfig?.let { config ->
+                feedConfigToDecoder(config)
+            }
+
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start MediaCodec decoder: ${e.message}", e)
             stop()
         }
     }
 
+    private fun feedConfigToDecoder(config: ByteArray) {
+        val dec = decoder ?: return
+        try {
+            val inIndex = dec.dequeueInputBuffer(2_000L)
+            if (inIndex >= 0) {
+                val inputBuffer: ByteBuffer? = dec.getInputBuffer(inIndex)
+                if (inputBuffer != null) {
+                    inputBuffer.clear()
+                    inputBuffer.put(config)
+                    dec.queueInputBuffer(
+                        inIndex,
+                        0,
+                        config.size,
+                        0L,
+                        MediaCodec.BUFFER_FLAG_CODEC_CONFIG
+                    )
+                    Log.d(TAG, "Pre-fed cached SPS/PPS config to newly started decoder")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to pre-feed codec config: ${e.message}")
+        }
+    }
+
     fun feedFrame(chunk: ByteArray) {
+        if (isConfigChunk(chunk)) {
+            cachedConfig = chunk
+        }
+
         val dec = decoder ?: return
         if (!isRunning.get()) return
 
@@ -88,6 +148,20 @@ class H264Decoder(
         }
     }
 
+    private fun isConfigChunk(chunk: ByteArray): Boolean {
+        val len = chunk.size
+        for (i in 0 until minOf(len - 4, 32)) {
+            if (chunk[i].toInt() == 0 && chunk[i + 1].toInt() == 0) {
+                val nalStart = if (chunk[i + 2].toInt() == 1) i + 3 else if (chunk[i + 2].toInt() == 0 && chunk[i + 3].toInt() == 1) i + 4 else -1
+                if (nalStart != -1 && nalStart < len) {
+                    val nalType = chunk[nalStart].toInt() and 0x1F
+                    if (nalType == 7 || nalType == 8) return true
+                }
+            }
+        }
+        return false
+    }
+
     private fun startOutputDrainLoop() {
         outputDrainJob = decoderScope.launch(Dispatchers.IO) {
             val bufferInfo = MediaCodec.BufferInfo()
@@ -98,9 +172,9 @@ class H264Decoder(
                     var outIndex = dec.dequeueOutputBuffer(bufferInfo, 2_000L)
 
                     while (outIndex >= 0 && isActive && isRunning.get()) {
-                        // Render directly to Surface with zero delay
-                        dec.releaseOutputBuffer(outIndex, true)
-                        frameCount++
+                        val shouldRender = activeSurface != null && activeSurface?.isValid == true
+                        dec.releaseOutputBuffer(outIndex, shouldRender)
+                        if (shouldRender) frameCount++
                         outIndex = dec.dequeueOutputBuffer(bufferInfo, 0L)
                     }
 
@@ -148,6 +222,8 @@ class H264Decoder(
 
     fun release() {
         stop()
+        activeSurface = null
+        cachedConfig = null
         decoderScope.cancel()
     }
 }

@@ -40,7 +40,6 @@ import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import com.example.honeymo.preview.audio.AudioPlayer
 import com.example.honeymo.preview.data.DeviceInfo
 import com.example.honeymo.preview.decoder.H264Decoder
 import com.example.honeymo.preview.network.PreviewClient
@@ -75,7 +74,6 @@ fun StreamPlayerScreen(
 
     var isRecording by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableIntStateOf(0) }
-    var isMuted by remember { mutableStateOf(false) }
 
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
     val activityLogs = remember { mutableStateListOf<ActivityLog>() }
@@ -86,8 +84,6 @@ fun StreamPlayerScreen(
         activityLogs.add(ActivityLog(time, msg, type))
     }
 
-    // Audio & Video Pipeline
-    val audioPlayer = remember { AudioPlayer() }
     val streamRecorder = remember { StreamRecorder() }
 
     val decoder = remember {
@@ -101,23 +97,14 @@ fun StreamPlayerScreen(
     val previewClient = remember {
         PreviewClient(
             baseUrl = serverUrl,
-            listener = object : PreviewClient.PreviewListener {
+            listener = object : PreviewClient.PreviewListener() {
                 override fun onDeviceListUpdated(devices: List<DeviceInfo>) {}
 
                 override fun onFrameReceived(chunk: ByteArray) {
                     bytesCount += chunk.size
-
-                    // Check for AAC ADTS syncword (0xFF 0xF...)
-                    val isAudio = chunk.size >= 7 && (chunk[0].toInt() and 0xFF) == 0xFF && (chunk[1].toInt() and 0xF0) == 0xF0
-
-                    if (isAudio) {
-                        audioPlayer.feedAdtsFrame(chunk)
-                        streamRecorder.onAudioFrame(chunk)
-                    } else {
-                        framesCount++
-                        decoder.feedFrame(chunk)
-                        streamRecorder.onVideoFrame(chunk)
-                    }
+                    framesCount++
+                    decoder.feedFrame(chunk)
+                    streamRecorder.onVideoFrame(chunk)
                 }
 
                 override fun onConnected() {
@@ -213,13 +200,12 @@ fun StreamPlayerScreen(
 
     DisposableEffect(Unit) {
         addLog("Initialized stream for ${device.name}", "info")
-        audioPlayer.start()
+        previewClient.connect(device.id)
 
         onDispose {
             if (streamRecorder.isRecording()) {
                 streamRecorder.stop(context)
             }
-            audioPlayer.release()
             previewClient.disconnect()
             decoder.release()
         }
@@ -257,8 +243,8 @@ fun StreamPlayerScreen(
                 )
                 if (started) {
                     isRecording = true
-                    addLog("🔴 Started video & voice recording...", "warn")
-                    Toast.makeText(context, "🔴 Recording started (Video + Audio)", Toast.LENGTH_SHORT).show()
+                    addLog("🔴 Started video recording...", "warn")
+                    Toast.makeText(context, "🔴 Recording started", Toast.LENGTH_SHORT).show()
                 } else {
                     addLog("Failed to start recorder", "error")
                     Toast.makeText(context, "Failed to start recorder", Toast.LENGTH_SHORT).show()
@@ -277,13 +263,32 @@ fun StreamPlayerScreen(
         }
     }
 
-    fun handleToggleMute() {
-        isMuted = !isMuted
-        audioPlayer.setMuted(isMuted)
-        addLog(if (isMuted) "Audio muted" else "Audio unmuted", "info")
-    }
-
     val aspectRatio = if (device.height > 0) device.width.toFloat() / device.height.toFloat() else 9f / 16f
+
+    val videoPlayer = remember {
+        movableContentOf {
+            AndroidView(
+                factory = { ctx ->
+                    SurfaceView(ctx).apply {
+                        surfaceViewRef = this
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(holder: SurfaceHolder) {
+                                decoder.setSurface(holder.surface)
+                                previewClient.requestKeyframe()
+                            }
+                            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, height: Int) {}
+                            override fun surfaceDestroyed(holder: SurfaceHolder) {
+                                decoder.clearSurface(holder.surface)
+                            }
+                        })
+                    }
+                },
+                modifier = Modifier
+                    .fillMaxSize()
+                    .aspectRatio(aspectRatio, matchHeightConstraintsFirst = false)
+            )
+        }
+    }
 
     // -------------------------------------------------------------
     // FULLSCREEN VIEW MODE
@@ -301,27 +306,7 @@ fun StreamPlayerScreen(
                 },
             contentAlignment = Alignment.Center
         ) {
-            AndroidView(
-                factory = { ctx ->
-                    SurfaceView(ctx).apply {
-                        surfaceViewRef = this
-                        holder.addCallback(object : SurfaceHolder.Callback {
-                            override fun surfaceCreated(holder: SurfaceHolder) {
-                                decoder.start(holder.surface)
-                                previewClient.connect(device.id)
-                            }
-                            override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, height: Int) {}
-                            override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                decoder.stop()
-                                previewClient.disconnect()
-                            }
-                        })
-                    }
-                },
-                modifier = Modifier
-                    .fillMaxSize()
-                    .aspectRatio(aspectRatio, matchHeightConstraintsFirst = false)
-            )
+            videoPlayer()
 
             // Fullscreen Overlay Controls
             AnimatedVisibility(
@@ -418,16 +403,6 @@ fun StreamPlayerScreen(
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Text("🔄", fontSize = 14.sp)
-                        }
-
-                        Button(
-                            onClick = { handleToggleMute() },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isMuted) Color(0xCCEF4444) else Color(0xCC334155)
-                            ),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text(if (isMuted) "🔇" else "🔊", fontSize = 14.sp)
                         }
 
                         Button(
@@ -581,27 +556,7 @@ fun StreamPlayerScreen(
                     .background(Color.Black),
                 contentAlignment = Alignment.Center
             ) {
-                AndroidView(
-                    factory = { ctx ->
-                        SurfaceView(ctx).apply {
-                            surfaceViewRef = this
-                            holder.addCallback(object : SurfaceHolder.Callback {
-                                override fun surfaceCreated(holder: SurfaceHolder) {
-                                    decoder.start(holder.surface)
-                                    previewClient.connect(device.id)
-                                }
-                                override fun surfaceChanged(h: SurfaceHolder, f: Int, w: Int, height: Int) {}
-                                override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                    decoder.stop()
-                                    previewClient.disconnect()
-                                }
-                            })
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .aspectRatio(aspectRatio, matchHeightConstraintsFirst = false)
-                )
+                videoPlayer()
 
                 // Recording indicator pill over video
                 if (isRecording) {
@@ -649,7 +604,7 @@ fun StreamPlayerScreen(
                 // Controls Row 1
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     // Sync Keyframe
                     Button(
@@ -660,9 +615,9 @@ fun StreamPlayerScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF334155)),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        contentPadding = PaddingValues(vertical = 10.dp)
                     ) {
-                        Text("🔄 Sync", fontSize = 11.sp, color = Color.White)
+                        Text("🔄 Sync Keyframe", fontSize = 12.sp, color = Color.White)
                     }
 
                     // Fullscreen
@@ -671,39 +626,26 @@ fun StreamPlayerScreen(
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1)),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        contentPadding = PaddingValues(vertical = 10.dp)
                     ) {
-                        Text("⛶ Full", fontSize = 11.sp, color = Color.White)
+                        Text("⛶ Fullscreen", fontSize = 12.sp, color = Color.White)
                     }
                 }
 
                 // Controls Row 2
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    // Mute / Unmute
-                    Button(
-                        onClick = { handleToggleMute() },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isMuted) Color(0xFFEF4444) else Color(0xFF334155)
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1.1f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
-                    ) {
-                        Text(if (isMuted) "🔇 Mute" else "🔊 Sound", fontSize = 11.sp, color = Color.White)
-                    }
-
                     // Screenshot
                     Button(
                         onClick = { handleScreenshot() },
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.weight(1f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        contentPadding = PaddingValues(vertical = 10.dp)
                     ) {
-                        Text("📸 Shot", fontSize = 11.sp, color = Color.White)
+                        Text("📸 Snapshot", fontSize = 12.sp, color = Color.White)
                     }
 
                     // Record
@@ -713,12 +655,12 @@ fun StreamPlayerScreen(
                             containerColor = if (isRecording) Color(0xFFEF4444) else Color(0xFF10B981)
                         ),
                         shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1.3f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(vertical = 10.dp)
                     ) {
                         Text(
-                            text = if (isRecording) "⏹️ Stop" else "🔴 Record",
-                            fontSize = 11.sp,
+                            text = if (isRecording) "⏹️ Stop Record" else "🔴 Record Video",
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
                         )

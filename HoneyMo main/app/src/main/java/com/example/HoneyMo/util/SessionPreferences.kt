@@ -26,4 +26,26 @@ object SessionPreferences {
     fun wasRecordingActive(context: Context): Boolean {
         return getPrefs(context).getBoolean(KEY_WAS_RECORDING_ACTIVE, false)
     }
+
+    private const val KEY_FACE_CAM_ENABLED = "key_face_cam_enabled"
+
+    fun setFaceCamEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_FACE_CAM_ENABLED, enabled).apply()
+    }
+
+    fun isFaceCamEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_FACE_CAM_ENABLED, true)
+    }
+
+    const val CAMERA_FACING_FRONT = "front"
+    const val CAMERA_FACING_BACK = "back"
+    private const val KEY_CAMERA_FACING = "key_camera_facing"
+
+    fun setCameraFacing(context: Context, facing: String) {
+        getPrefs(context).edit().putString(KEY_CAMERA_FACING, facing).apply()
+    }
+
+    fun getCameraFacing(context: Context): String {
+        return getPrefs(context).getString(KEY_CAMERA_FACING, CAMERA_FACING_FRONT) ?: CAMERA_FACING_FRONT
+    }
 }

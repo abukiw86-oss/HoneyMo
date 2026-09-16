@@ -11,9 +11,14 @@
     <!-- Foreground Service & Screen Capture -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Camera & Selfie Stream -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
 
     <!-- Notifications & Full-Screen Intent Recovery -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -55,12 +60,12 @@
             </intent-filter>
         </receiver>
 
-        <!-- Foreground Service with type mediaProjection and microphone -->
+        <!-- Foreground Service with type mediaProjection and camera -->
         <service
             android:name=".service.ScreenCaptureService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="mediaProjection|microphone" />
+            android:foregroundServiceType="mediaProjection|camera" />
 
     </application>
 

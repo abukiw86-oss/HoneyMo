@@ -25,7 +25,6 @@ class StreamRecorder {
 
     private var mediaMuxer: MediaMuxer? = null
     private var videoTrackIndex = -1
-    private var audioTrackIndex = -1
     private var tempFile: File? = null
     private val isRecording = AtomicBoolean(false)
     private var isMuxerStarted = false
@@ -37,7 +36,6 @@ class StreamRecorder {
 
     private var startNanoTime = 0L
     private var lastVideoPtsUs = 0L
-    private var lastAudioPtsUs = 0L
     private var videoFrameCount = 0
 
     fun start(
@@ -55,10 +53,8 @@ class StreamRecorder {
         cachedPps = pps
         isMuxerStarted = false
         videoTrackIndex = -1
-        audioTrackIndex = -1
         videoFrameCount = 0
         lastVideoPtsUs = 0L
-        lastAudioPtsUs = 0L
 
         try {
             val outputDir = context.cacheDir
@@ -68,7 +64,7 @@ class StreamRecorder {
             startNanoTime = System.nanoTime()
             Log.d(TAG, "Recording started to temp file: ${tempFile?.absolutePath}")
 
-            // If SPS and PPS are already cached, start muxer tracks immediately
+            // If SPS and PPS are already cached, start muxer track immediately
             if (cachedSps != null && cachedPps != null) {
                 initMuxerTracks(cachedSps!!, cachedPps!!)
             }
@@ -126,57 +122,23 @@ class StreamRecorder {
         }
     }
 
-    fun onAudioFrame(chunk: ByteArray) {
-        if (!isRecording.get() || !isMuxerStarted || mediaMuxer == null || audioTrackIndex < 0) return
-        if (chunk.size <= 7) return // ADTS header minimum 7 bytes
-
-        try {
-            val nowNano = System.nanoTime()
-            var ptsUs = (nowNano - startNanoTime) / 1000L
-            if (ptsUs <= lastAudioPtsUs) {
-                ptsUs = lastAudioPtsUs + 500L
-            }
-            lastAudioPtsUs = ptsUs
-
-            val payloadSize = chunk.size - 7
-            val bufferInfo = MediaCodec.BufferInfo().apply {
-                offset = 7
-                size = payloadSize
-                presentationTimeUs = ptsUs
-                flags = 0
-            }
-
-            val buffer = ByteBuffer.wrap(chunk)
-            mediaMuxer?.writeSampleData(audioTrackIndex, buffer, bufferInfo)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error writing audio frame to muxer: ${e.message}")
-        }
-    }
-
     private fun initMuxerTracks(sps: ByteArray, pps: ByteArray) {
         val muxer = mediaMuxer ?: return
         if (isMuxerStarted) return
 
         try {
-            // 1. Video Track (H.264 AVC)
+            // Video Track (H.264 AVC)
             val videoFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                 setByteBuffer("csd-0", ByteBuffer.wrap(sps))
                 setByteBuffer("csd-1", ByteBuffer.wrap(pps))
             }
             videoTrackIndex = muxer.addTrack(videoFormat)
 
-            // 2. Audio Track (AAC-LC 44.1kHz Mono)
-            val audioFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, 44100, 1).apply {
-                val csd0 = byteArrayOf(0x12.toByte(), 0x08.toByte())
-                setByteBuffer("csd-0", ByteBuffer.wrap(csd0))
-            }
-            audioTrackIndex = muxer.addTrack(audioFormat)
-
             muxer.start()
             isMuxerStarted = true
-            Log.d(TAG, "MediaMuxer started with Video track $videoTrackIndex and Audio track $audioTrackIndex")
+            Log.d(TAG, "MediaMuxer started with Video track $videoTrackIndex")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to initialize muxer tracks: ${e.message}", e)
+            Log.e(TAG, "Failed to initialize muxer track: ${e.message}", e)
         }
     }
 
