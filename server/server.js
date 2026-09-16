@@ -170,12 +170,31 @@ wssDevice.on('connection', (ws, req) => {
   activeDevices.set(deviceId, deviceRecord);
   broadcastDeviceListToViewers();
 
-  // Calculate per-device FPS / Bitrate
+  // Calculate per-device FPS / Bitrate and send STATS to viewers
   const statsInterval = setInterval(() => {
     deviceRecord.stats.currentFps = deviceRecord._secondFrames;
     deviceRecord.stats.currentBitrateKbps = Math.round((deviceRecord._secondBytes * 8) / 1024);
     deviceRecord._secondFrames = 0;
     deviceRecord._secondBytes = 0;
+
+    const statsPayload = JSON.stringify({
+      type: 'STATS',
+      deviceId: deviceId,
+      stats: {
+        fps: deviceRecord.stats.currentFps,
+        bitrateKbps: deviceRecord.stats.currentBitrateKbps,
+        totalFrames: deviceRecord.stats.framesReceived,
+        totalBytes: deviceRecord.stats.bytesReceived
+      }
+    });
+
+    wssViewer.clients.forEach((viewer) => {
+      if (viewer.readyState === WebSocket.OPEN) {
+        if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+          viewer.send(statsPayload);
+        }
+      }
+    });
   }, 1000);
 
   ws.on('message', (message, isBinary) => {

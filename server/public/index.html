@@ -575,6 +575,27 @@
           pingVal.innerHTML = `${rtt} <small style="font-size: 0.85rem; font-weight: normal;">ms</small>`;
           pingVal.style.color = rtt < 80 ? '#10B981' : (rtt < 180 ? '#F59E0B' : '#EF4444');
         }
+      } else if (msg.type === 'DEVICE_LIST') {
+        const devices = msg.devices || [];
+        if (devices.length > 0) {
+          const dev = devices[0];
+          setDeviceStatus(true, {
+            width: dev.width,
+            height: dev.height,
+            fps: dev.fps,
+            deviceName: dev.name
+          });
+          if (dev.stats) {
+            updateStats({
+              fps: dev.stats.currentFps || dev.fps,
+              bitrateKbps: dev.stats.currentBitrateKbps || Math.round((dev.bitrate || 1000000) / 1000),
+              totalFrames: dev.stats.framesReceived || 0,
+              totalBytes: dev.stats.bytesReceived || 0
+            });
+          }
+        } else {
+          setDeviceStatus(false);
+        }
       } else if (msg.type === 'INIT_STATUS' || msg.type === 'DEVICE_STATUS') {
         setDeviceStatus(msg.connected, msg.metadata);
       } else if (msg.type === 'DEVICE_INFO') {
