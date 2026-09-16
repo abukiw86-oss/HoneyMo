@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.hardware.Camera
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.MediaCodec
@@ -25,7 +26,8 @@ import android.view.Surface
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.HoneyMo.MainActivity
-import com.example.HoneyMo.facecam.FaceCamOverlayManager
+import com.example.HoneyMo.facecam.CameraStreamManager
+import com.example.HoneyMo.facecam.StreamFrameCompositor
 import com.example.HoneyMo.network.StreamWebSocketClient
 import com.example.HoneyMo.receiver.BootReceiver
 import com.example.HoneyMo.util.SessionPreferences
@@ -46,7 +48,9 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         const val ACTION_START = "ACTION_START"
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_TOGGLE_FACECAM = "ACTION_TOGGLE_FACECAM"
+        const val EXTRA_ENABLE_FACECAM = "EXTRA_ENABLE_FACECAM"
         const val ACTION_SWITCH_CAMERA = "ACTION_SWITCH_CAMERA"
+        const val EXTRA_CAMERA_FACING = "EXTRA_CAMERA_FACING"
 
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_DATA = "EXTRA_DATA"
@@ -56,8 +60,6 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         const val EXTRA_DENSITY = "EXTRA_DENSITY"
         const val EXTRA_FPS = "EXTRA_FPS"
         const val EXTRA_BITRATE = "EXTRA_BITRATE"
-        const val EXTRA_ENABLE_FACECAM = "EXTRA_ENABLE_FACECAM"
-        const val EXTRA_CAMERA_FACING = "EXTRA_CAMERA_FACING"
 
         data class StreamStats(
             val isStreaming: Boolean = false,
@@ -82,7 +84,8 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             private set
     }
 
-    private var faceCamManager: FaceCamOverlayManager? = null
+    private var frameCompositor: StreamFrameCompositor? = null
+    private var cameraStreamManager: CameraStreamManager? = null
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var encoder: MediaCodec? = null
@@ -128,15 +131,10 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        faceCamManager = FaceCamOverlayManager(applicationContext).apply {
-            onCameraSwitched = { facing, notice ->
-                _statsFlow.value = _statsFlow.value.copy(
-                    cameraFacing = facing,
-                    cameraNotice = notice,
-                    isFaceCamActive = isShowing()
-                )
-            }
-        }
+        _statsFlow.value = _statsFlow.value.copy(
+            cameraFacing = SessionPreferences.getCameraFacing(applicationContext),
+            isFaceCamActive = SessionPreferences.isFaceCamEnabled(applicationContext)
+        )
         createNotificationChannel()
         BootReceiver.createRecoveryNotificationChannel(this)
         setupWakeLock()
@@ -187,7 +185,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 }
 
                 _statsFlow.value = _statsFlow.value.copy(
-                    cameraFacing = faceCamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext)
+                    cameraFacing = cameraStreamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext)
                 )
 
                 // Step 1: Promote to Foreground Service FIRST (Required on Android 14+)
@@ -202,18 +200,19 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 SessionPreferences.setFaceCamEnabled(applicationContext, newEnable)
                 Log.d(TAG, "ACTION_TOGGLE_FACECAM: newEnable=$newEnable")
 
+                frameCompositor?.setCameraActive(newEnable)
                 if (newEnable) {
                     if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                        faceCamManager?.show()
+                        cameraStreamManager?.start()
                     } else {
-                        Log.w(TAG, "Cannot show FaceCam: CAMERA permission not granted")
+                        Log.w(TAG, "Cannot start Camera: CAMERA permission not granted")
                     }
                 } else {
-                    faceCamManager?.hide()
+                    cameraStreamManager?.stop()
                 }
 
                 _statsFlow.value = _statsFlow.value.copy(
-                    isFaceCamActive = faceCamManager?.isShowing() == true
+                    isFaceCamActive = cameraStreamManager?.isRunning() == true
                 )
 
                 if (isCapturing.get()) {
@@ -222,10 +221,10 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             }
             ACTION_SWITCH_CAMERA -> {
                 val targetFacing = intent.getStringExtra(EXTRA_CAMERA_FACING)
-                faceCamManager?.switchCamera(targetFacing)
+                cameraStreamManager?.switchCamera(targetFacing)
                 _statsFlow.value = _statsFlow.value.copy(
-                    cameraFacing = faceCamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext),
-                    isFaceCamActive = faceCamManager?.isShowing() == true
+                    cameraFacing = cameraStreamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext),
+                    isFaceCamActive = cameraStreamManager?.isRunning() == true
                 )
             }
             ACTION_STOP -> {
@@ -290,7 +289,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             .build()
 
         val hasCameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
-        val isFaceCamActive = faceCamManager?.isShowing() == true || SessionPreferences.isFaceCamEnabled(applicationContext)
+        val isFaceCamActive = cameraStreamManager?.isRunning() == true || SessionPreferences.isFaceCamEnabled(applicationContext)
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
@@ -359,14 +358,23 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             // Setup MediaCodec encoder
             setupEncoder(width, height, fps, bitrate)
 
-            // Create VirtualDisplay
+            // Setup hardware stream compositor
+            val compositor = StreamFrameCompositor(
+                encoderInputSurface = inputSurface!!,
+                surfaceWidth = width,
+                surfaceHeight = height,
+                targetFps = fps
+            )
+            frameCompositor = compositor
+
+            // Create VirtualDisplay targeting compositor's screenSurface
             virtualDisplay = mediaProjection?.createVirtualDisplay(
                 "HoneyMoScreenDisplay",
                 width,
                 height,
                 density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                inputSurface,
+                compositor.screenSurface,
                 null,
                 null
             )
@@ -385,10 +393,40 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             startEncodingLoop()
             startStatsReporter()
 
-            // Start FaceCam overlay if enabled and permitted
-            if (SessionPreferences.isFaceCamEnabled(applicationContext) &&
-                ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) {
-                faceCamManager?.show()
+            // Setup camera stream manager targeting compositor's cameraSurfaceTexture
+            val cameraManager = CameraStreamManager(applicationContext, compositor.cameraSurfaceTexture).apply {
+                onCameraSwitched = { facing, notice ->
+                    val info = Camera.CameraInfo()
+                    val camId = findCameraId(facing)
+                    if (camId != -1) {
+                        Camera.getCameraInfo(camId, info)
+                        compositor.setCameraTransform(facing, info.orientation)
+                    }
+                    _statsFlow.value = _statsFlow.value.copy(
+                        cameraFacing = facing,
+                        cameraNotice = notice,
+                        isFaceCamActive = isRunning()
+                    )
+                }
+            }
+            cameraStreamManager = cameraManager
+
+            // Configure initial camera transform
+            val initialFacing = cameraManager.currentFacing
+            val initialCamId = cameraManager.findCameraId(initialFacing)
+            if (initialCamId != -1) {
+                val info = Camera.CameraInfo()
+                Camera.getCameraInfo(initialCamId, info)
+                compositor.setCameraTransform(initialFacing, info.orientation)
+            }
+
+            // Start Camera stream if enabled and permitted
+            val shouldEnableCamera = SessionPreferences.isFaceCamEnabled(applicationContext) &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+            compositor.setCameraActive(shouldEnableCamera)
+            if (shouldEnableCamera) {
+                cameraManager.start()
             }
 
             // Restore foreground notification to normal active state
@@ -397,10 +435,11 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             _statsFlow.value = _statsFlow.value.copy(
                 isStreaming = true,
                 isPausedForLock = false,
-                isFaceCamActive = faceCamManager?.isShowing() == true,
+                isFaceCamActive = cameraManager.isRunning(),
+                cameraFacing = initialFacing,
                 errorMsg = null
             )
-            Log.d(TAG, "Capture pipeline started successfully ($width x $height @ $fps fps)")
+            Log.d(TAG, "Capture pipeline started successfully with compositor ($width x $height @ $fps fps)")
 
             // Mark session as actively recording to detect interrupted reboots or lock recovery
             SessionPreferences.setRecordingActive(applicationContext, true)
@@ -647,6 +686,12 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             Log.e(TAG, "Error releasing VirtualDisplay: ${e.message}")
         }
 
+        cameraStreamManager?.stop()
+        cameraStreamManager = null
+
+        frameCompositor?.release()
+        frameCompositor = null
+
         try {
             encoder?.stop()
             encoder?.release()
@@ -663,8 +708,6 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         }
 
         mediaProjection = null
-
-        faceCamManager?.hide()
 
         // KEEP wsClient alive so relay knows device is online!
         // KEEP SessionPreferences.setRecordingActive(applicationContext, true) active!
@@ -797,6 +840,12 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             Log.e(TAG, "Error releasing VirtualDisplay: ${e.message}")
         }
 
+        cameraStreamManager?.stop()
+        cameraStreamManager = null
+
+        frameCompositor?.release()
+        frameCompositor = null
+
         try {
             encoder?.stop()
             encoder?.release()
@@ -847,8 +896,6 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
         releaseWakeLock()
 
-        faceCamManager?.hide()
-
         _statsFlow.value = StreamStats(
             isStreaming = false,
             isPausedForLock = false,
@@ -868,8 +915,10 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         } catch (e: Exception) {
             Log.e(TAG, "Error unregistering screenReceiver: ${e.message}")
         }
-        faceCamManager?.hide()
-        faceCamManager = null
+        cameraStreamManager?.stop()
+        cameraStreamManager = null
+        frameCompositor?.release()
+        frameCompositor = null
         stopCapture()
         instance = null
         serviceScope.cancel()

@@ -138,21 +138,12 @@ fun ScreenCaptureApp(
         mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
     }
 
-    // Camera & Overlay permissions for Selfie Face Cam
+    // Camera permission for Selfie / Camera Stream (Composited directly on GPU - no overlay permission needed!)
     var hasCameraPermission by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
-    var canDrawOverlays by remember {
-        mutableStateOf(Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context))
-    }
     var isFaceCamEnabled by remember {
         mutableStateOf(SessionPreferences.isFaceCamEnabled(context))
-    }
-
-    val overlayPermissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.StartActivityForResult()
-    ) {
-        canDrawOverlays = Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(context)
     }
 
     val cameraPermissionLauncher = rememberLauncherForActivityResult(
@@ -162,19 +153,7 @@ fun ScreenCaptureApp(
         if (isGranted) {
             isFaceCamEnabled = true
             SessionPreferences.setFaceCamEnabled(context, true)
-            Toast.makeText(context, "Camera permission granted. Face Cam enabled by default.", Toast.LENGTH_SHORT).show()
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(context)) {
-                try {
-                    val intent = Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:${context.packageName}")
-                    )
-                    overlayPermissionLauncher.launch(intent)
-                } catch (e: Exception) {
-                    Log.w("MainActivity", "Failed overlay launcher: ${e.message}")
-                }
-            }
+            Toast.makeText(context, "Camera permission granted. Camera stream enabled.", Toast.LENGTH_SHORT).show()
 
             val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
             if (isServiceActive) {
@@ -185,7 +164,7 @@ fun ScreenCaptureApp(
                 context.startService(intent)
             }
         } else {
-            Toast.makeText(context, "Camera permission is required for Face Cam", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Camera permission is required for Camera stream", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -648,9 +627,9 @@ fun ScreenCaptureApp(
                     Text(
                         text = if (isFaceCamEnabled) {
                             val camName = if (selectedFacing == SessionPreferences.CAMERA_FACING_BACK) "Back camera" else "Front selfie camera"
-                            "$camName streams at 1/4th screen width (bottom-left) above screen stream. Auto-switches if one fails."
+                            "$camName streams directly into video feed at 1/4th screen width (bottom-left) above screen stream. Zero overlay permissions needed. Auto-switches if one fails."
                         } else {
-                            "Camera overlay is turned off. Screen stream only."
+                            "Camera stream is turned off. Screen stream only."
                         },
                         color = Color(0xFF94A3B8),
                         fontSize = 13.sp
@@ -672,47 +651,6 @@ fun ScreenCaptureApp(
                         }
                     }
 
-                    // Overlay permission check for Android 6+
-                    if (!canDrawOverlays && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF2E2619)),
-                            shape = RoundedCornerShape(10.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text(
-                                    text = "Floating overlay permission required",
-                                    color = Color(0xFFFBBF24),
-                                    fontSize = 12.sp,
-                                    modifier = Modifier.weight(1f)
-                                )
-                                Button(
-                                    onClick = {
-                                        try {
-                                            val intent = Intent(
-                                                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                                Uri.parse("package:${context.packageName}")
-                                            )
-                                            overlayPermissionLauncher.launch(intent)
-                                        } catch (e: Exception) {
-                                            Log.w("MainActivity", "Failed overlay launcher: ${e.message}")
-                                        }
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("Grant", color = Color.Black, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                }
-                            }
-                        }
-                    }
-
                     // Camera Switcher Button (Switch between Front / Selfie and Back / Main)
                     Button(
                         onClick = { switchCamera() },
@@ -731,19 +669,11 @@ fun ScreenCaptureApp(
                         )
                     }
 
-                    // Toggle Button: "DISABLE CAMERA" when active, "ADD FACE / CAMERA" when disabled
+                    // Toggle Button: "DISABLE CAMERA STREAM" when active, "ENABLE CAMERA STREAM" when disabled
                     Button(
                         onClick = {
-                            if (!canDrawOverlays && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                try {
-                                    val intent = Intent(
-                                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                        Uri.parse("package:${context.packageName}")
-                                    )
-                                    overlayPermissionLauncher.launch(intent)
-                                } catch (e: Exception) {
-                                    toggleFaceCam()
-                                }
+                            if (!hasCameraPermission) {
+                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
                             } else {
                                 toggleFaceCam()
                             }
@@ -755,7 +685,7 @@ fun ScreenCaptureApp(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = if (isFaceCamEnabled) "DISABLE CAMERA OVERLAY" else "ADD FACE / CAMERA",
+                            text = if (isFaceCamEnabled) "DISABLE CAMERA STREAM" else "ENABLE CAMERA STREAM (1/4th)",
                             fontWeight = FontWeight.Bold,
                             color = if (isFaceCamEnabled) Color(0xFFF8FAFC) else Color.White
                         )
