@@ -38,7 +38,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.example.HoneyMo.receiver.BootReceiver
 import com.example.HoneyMo.service.ScreenCaptureService
-import com.example.HoneyMo.util.AppIconManager
 import com.example.HoneyMo.util.SessionPreferences
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -123,13 +122,6 @@ fun ScreenCaptureApp(
     var isBatteryOptIgnored by remember {
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
-    }
-
-    var isIconVisible by remember { mutableStateOf(AppIconManager.isIconVisible(context)) }
-
-    LaunchedEffect(stats.isStreaming) {
-        kotlinx.coroutines.delay(400)
-        isIconVisible = AppIconManager.isIconVisible(context)
     }
 
     // Screen capture permission launcher
@@ -389,50 +381,6 @@ fun ScreenCaptureApp(
                         label = "Data Sent",
                         value = "%.1f MB".format(stats.bytesSent / (1024f * 1024f))
                     )
-                }
-
-                // Launcher Icon Status & Manual Reveal Action
-                HorizontalDivider(color = Color(0xFF334155))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Launcher Icon", fontSize = 11.sp, color = Color(0xFF94A3B8))
-                        Text(
-                            text = if (isIconVisible) "Visible" else "Hidden (Stealth)",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = if (isIconVisible) Color(0xFF10B981) else Color(0xFFF59E0B)
-                        )
-                    }
-
-                    Button(
-                        onClick = {
-                            val newVisible = !isIconVisible
-                            if (newVisible) {
-                                AppIconManager.showIcon(context)
-                            } else {
-                                AppIconManager.hideIcon(context)
-                            }
-                            isIconVisible = AppIconManager.isIconVisible(context)
-                            ScreenCaptureService.notifyIconStateChanged(isIconVisible)
-                            val toastMsg = if (isIconVisible) "Launcher icon revealed" else "Launcher icon hidden"
-                            Toast.makeText(context, toastMsg, Toast.LENGTH_SHORT).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isIconVisible) Color(0xFFEF4444) else Color(0xFF3B82F6)
-                        ),
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        shape = RoundedCornerShape(8.dp)
-                    ) {
-                        Text(
-                            text = if (isIconVisible) "Hide Icon" else "Reveal Icon",
-                            fontSize = 12.sp,
-                            color = Color.White
-                        )
-                    }
                 }
 
                 stats.errorMsg?.let { error ->

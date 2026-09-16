@@ -69,7 +69,6 @@ function getDeviceList() {
       height: dev.height,
       fps: dev.fps,
       bitrate: dev.bitrate,
-      isIconVisible: dev.isIconVisible !== false,
       connectedAt: dev.connectedAt,
       stats: dev.stats
     });
@@ -134,7 +133,6 @@ wssDevice.on('connection', (ws, req) => {
     height: 1280,
     fps: 30,
     bitrate: 2000000,
-    isIconVisible: true,
     connectedAt: new Date().toISOString(),
     cachedConfig: null,
     stats: {
@@ -196,25 +194,9 @@ wssDevice.on('connection', (ws, req) => {
           if (data.height) deviceRecord.height = data.height;
           if (data.fps) deviceRecord.fps = data.fps;
           if (data.bitrate) deviceRecord.bitrate = data.bitrate;
-          if (typeof data.isIconVisible === 'boolean') deviceRecord.isIconVisible = data.isIconVisible;
 
-          console.log(`[Device] Registered ${deviceRecord.name} [${deviceId}] (${deviceRecord.width}x${deviceRecord.height} @ ${deviceRecord.fps}fps, iconVisible=${deviceRecord.isIconVisible})`);
+          console.log(`[Device] Registered ${deviceRecord.name} [${deviceId}] (${deviceRecord.width}x${deviceRecord.height} @ ${deviceRecord.fps}fps)`);
           broadcastDeviceListToViewers();
-        } else if (data.type === 'ICON_STATE') {
-          deviceRecord.isIconVisible = !!data.isIconVisible;
-          console.log(`[Device ${deviceId}] Broadcasted ICON_STATE: isIconVisible=${deviceRecord.isIconVisible}`);
-          const payload = JSON.stringify({
-            type: 'DEVICE_ICON_STATE',
-            deviceId: deviceId,
-            isIconVisible: deviceRecord.isIconVisible
-          });
-          wssViewer.clients.forEach((client) => {
-            if (client.readyState === WebSocket.OPEN) {
-              if (client.subscribedDeviceId === deviceId || (!client.subscribedDeviceId && activeDevices.size === 1)) {
-                client.send(payload);
-              }
-            }
-          });
         }
       } catch (err) {
         console.error('[Device] Error parsing message:', err.message);
@@ -287,27 +269,6 @@ wssViewer.on('connection', (ws, req) => {
             console.log(`[Viewer] Requested keyframe from device ${devId}`);
           }
         }
-      } else if (data.type === 'SET_ICON_VISIBILITY' || data.type === 'REVEAL_ICON' || data.type === 'HIDE_ICON' || data.type === 'TOGGLE_ICON') {
-        const devId = data.deviceId || ws.subscribedDeviceId;
-        const targetDev = (devId && activeDevices.has(devId))
-          ? activeDevices.get(devId)
-          : (activeDevices.size === 1 ? activeDevices.values().next().value : null);
-
-        if (targetDev && targetDev.ws && targetDev.ws.readyState === WebSocket.OPEN) {
-          const isVisible = data.type === 'SET_ICON_VISIBILITY'
-            ? !!data.visible
-            : data.type === 'HIDE_ICON'
-            ? false
-            : data.type === 'REVEAL_ICON'
-            ? true
-            : !targetDev.isIconVisible;
-
-          targetDev.ws.send(JSON.stringify({
-            type: 'SET_ICON_VISIBILITY',
-            visible: isVisible
-          }));
-          console.log(`[Viewer] Forwarded SET_ICON_VISIBILITY (visible=${isVisible}) to device ${targetDev.id}`);
-        }
       }
     } catch (e) {
       console.error('[Viewer Message Error]', e.message);
@@ -321,13 +282,6 @@ wssViewer.on('connection', (ws, req) => {
 
 function sendCachedConfigAndKeyframe(viewerWs, dev) {
   if (!dev) return;
-  if (viewerWs.readyState === WebSocket.OPEN) {
-    viewerWs.send(JSON.stringify({
-      type: 'DEVICE_ICON_STATE',
-      deviceId: dev.id,
-      isIconVisible: dev.isIconVisible !== false
-    }));
-  }
   if (dev.cachedConfig && viewerWs.readyState === WebSocket.OPEN) {
     viewerWs.send(dev.cachedConfig, { binary: true });
   }

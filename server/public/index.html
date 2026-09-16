@@ -401,9 +401,6 @@
           <button id="btnKeyframe" title="Request an immediate I-Frame from device">
             🔄 Request Keyframe
           </button>
-          <button id="btnRevealIcon" title="Remotely unhide HoneyMo launcher icon on Android device">
-            👁️ Reveal App Icon
-          </button>
           <button id="btnSnapshot" title="Download snapshot image">
             📸 Take Screenshot
           </button>
@@ -445,7 +442,6 @@
     const serverWsUrlBox = document.getElementById('serverWsUrl');
 
     const btnKeyframe = document.getElementById('btnKeyframe');
-    const btnRevealIcon = document.getElementById('btnRevealIcon');
     const btnSnapshot = document.getElementById('btnSnapshot');
     const btnRecord = document.getElementById('btnRecord');
     const btnFullscreen = document.getElementById('btnFullscreen');
@@ -556,38 +552,11 @@
       };
     }
 
-    let isDeviceIconVisible = true;
-
-    function updateIconToggleButton(visible) {
-      isDeviceIconVisible = !!visible;
-      if (isDeviceIconVisible) {
-        btnRevealIcon.textContent = '🙈 Hide App Icon';
-        btnRevealIcon.title = 'Remotely hide HoneyMo launcher icon on Android device';
-        btnRevealIcon.style.borderColor = 'rgba(239, 68, 68, 0.4)';
-        btnRevealIcon.style.color = 'var(--text-primary)';
-      } else {
-        btnRevealIcon.textContent = '👁️ Reveal App Icon';
-        btnRevealIcon.title = 'Remotely reveal HoneyMo launcher icon on Android device';
-        btnRevealIcon.style.borderColor = 'rgba(99, 102, 241, 0.6)';
-        btnRevealIcon.style.color = '#818cf8';
-      }
-    }
-
-    // Initialize toggle button state
-    updateIconToggleButton(true);
-
     function handleControlMessage(msg) {
       if (msg.type === 'INIT_STATUS' || msg.type === 'DEVICE_STATUS') {
         setDeviceStatus(msg.connected, msg.metadata);
       } else if (msg.type === 'DEVICE_INFO') {
         updateDeviceInfo(msg.metadata);
-      } else if (msg.type === 'DEVICE_ICON_STATE') {
-        updateIconToggleButton(msg.isIconVisible);
-        log(`Device launcher icon is now: ${msg.isIconVisible ? 'VISIBLE' : 'HIDDEN'}`, 'info');
-      } else if (msg.type === 'DEVICE_LIST') {
-        if (msg.devices && msg.devices.length > 0 && typeof msg.devices[0].isIconVisible === 'boolean') {
-          updateIconToggleButton(msg.devices[0].isIconVisible);
-        }
       } else if (msg.type === 'STATS') {
         updateStats(msg.stats);
       }
@@ -621,9 +590,6 @@
       if (meta.fps) {
         document.getElementById('fpsSub').textContent = `Target: ${meta.fps} fps`;
       }
-      if (typeof meta.isIconVisible === 'boolean') {
-        updateIconToggleButton(meta.isIconVisible);
-      }
     }
 
     function updateStats(s) {
@@ -639,20 +605,6 @@
       if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'REQUEST_KEYFRAME' }));
         log('Requested immediate keyframe from Android MediaCodec', 'info');
-      }
-    };
-
-    btnRevealIcon.onclick = () => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        const targetVisible = !isDeviceIconVisible;
-        ws.send(JSON.stringify({
-          type: 'SET_ICON_VISIBILITY',
-          visible: targetVisible
-        }));
-        const action = targetVisible ? 'Reveal App Icon' : 'Hide App Icon';
-        log(`Sent remote command: ${action} to device`, 'success');
-      } else {
-        log('Cannot send command: Viewer WebSocket is not connected', 'warn');
       }
     };
 
