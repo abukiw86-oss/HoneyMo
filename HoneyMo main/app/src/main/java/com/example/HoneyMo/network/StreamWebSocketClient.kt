@@ -14,7 +14,6 @@ class StreamWebSocketClient(
     private val height: Int,
     private val fps: Int,
     private val bitrate: Int,
-    private val getIconVisible: (() -> Boolean)? = null,
     private val listener: StreamListener
 ) {
 
@@ -22,7 +21,6 @@ class StreamWebSocketClient(
         fun onConnected()
         fun onDisconnected(reason: String)
         fun onKeyframeRequested()
-        fun onSetIconVisibilityRequested(visible: Boolean)
         fun onError(error: String)
     }
 
@@ -66,12 +64,6 @@ class StreamWebSocketClient(
                     val json = JSONObject(text)
                     when (json.optString("type")) {
                         "REQUEST_KEYFRAME" -> listener.onKeyframeRequested()
-                        "SET_ICON_VISIBILITY" -> {
-                            val visible = json.optBoolean("visible", true)
-                            listener.onSetIconVisibilityRequested(visible)
-                        }
-                        "REVEAL_ICON" -> listener.onSetIconVisibilityRequested(true)
-                        "HIDE_ICON" -> listener.onSetIconVisibilityRequested(false)
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to parse message: ${e.message}")
@@ -108,23 +100,8 @@ class StreamWebSocketClient(
             put("fps", fps)
             put("bitrate", bitrate)
             put("androidVersion", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
-            getIconVisible?.let {
-                put("isIconVisible", it.invoke())
-            }
         }
         webSocket?.send(meta.toString())
-    }
-
-    fun sendIconState(isIconVisible: Boolean): Boolean {
-        val ws = webSocket ?: return false
-        if (!isConnected.get()) return false
-        val msg = JSONObject().apply {
-            put("type", "ICON_STATE")
-            put("isIconVisible", isIconVisible)
-        }
-        val sent = ws.send(msg.toString())
-        Log.d(TAG, "Sent ICON_STATE to server: isIconVisible=$isIconVisible (success=$sent)")
-        return sent
     }
 
     fun sendFrame(data: ByteArray, isKeyFrame: Boolean): Boolean {
