@@ -7,6 +7,5 @@ data class DeviceInfo(
     val height: Int = 1280,
     val fps: Int = 30,
     val bitrate: Int = 2000000,
-    val connectedAt: String = "",
-    val isIconVisible: Boolean = true
+    val connectedAt: String = ""
 )

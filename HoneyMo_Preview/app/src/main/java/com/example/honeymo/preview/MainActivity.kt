@@ -66,12 +66,6 @@ fun HoneyMoPreviewApp() {
                     }
                 }
 
-                override fun onIconStateChanged(deviceId: String, isIconVisible: Boolean) {
-                    if (selectedDevice?.id == deviceId) {
-                        selectedDevice = selectedDevice?.copy(isIconVisible = isIconVisible)
-                    }
-                }
-
                 override fun onFrameReceived(chunk: ByteArray) {}
 
                 override fun onConnected() {

@@ -18,7 +18,6 @@ class PreviewClient(
     interface PreviewListener {
         fun onDeviceListUpdated(devices: List<DeviceInfo>)
         fun onFrameReceived(chunk: ByteArray)
-        fun onIconStateChanged(deviceId: String, isIconVisible: Boolean) {}
         fun onConnected()
         fun onDisconnected(reason: String)
         fun onError(error: String)
@@ -101,10 +100,6 @@ class PreviewClient(
                             }
                         }
                         withContextUi { listener.onDeviceListUpdated(list) }
-                    } else if (type == "DEVICE_ICON_STATE") {
-                        val devId = json.optString("deviceId")
-                        val isVisible = json.optBoolean("isIconVisible", true)
-                        withContextUi { listener.onIconStateChanged(devId, isVisible) }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing JSON message: ${e.message}")
@@ -142,27 +137,6 @@ class PreviewClient(
         Log.d(TAG, "Sent REQUEST_KEYFRAME for device $devId")
     }
 
-    fun setIconVisibility(visible: Boolean) {
-        val devId = currentDeviceId
-        val msg = JSONObject().apply {
-            put("type", "SET_ICON_VISIBILITY")
-            put("visible", visible)
-            if (devId != null) {
-                put("deviceId", devId)
-            }
-        }
-        webSocket?.send(msg.toString())
-        Log.d(TAG, "Sent SET_ICON_VISIBILITY: visible=$visible for device $devId")
-    }
-
-    fun sendRevealIcon() {
-        setIconVisibility(true)
-    }
-
-    fun sendHideIcon() {
-        setIconVisibility(false)
-    }
-
     fun disconnect() {
         isRunning.set(false)
         try {
@@ -190,8 +164,7 @@ class PreviewClient(
             height = obj.optInt("height", 1280),
             fps = obj.optInt("fps", 30),
             bitrate = obj.optInt("bitrate", 2000000),
-            connectedAt = obj.optString("connectedAt", ""),
-            isIconVisible = obj.optBoolean("isIconVisible", true)
+            connectedAt = obj.optString("connectedAt", "")
         )
     }
 

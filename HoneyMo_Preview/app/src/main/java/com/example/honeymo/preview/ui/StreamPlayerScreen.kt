@@ -75,7 +75,6 @@ fun StreamPlayerScreen(
     var isRecording by remember { mutableStateOf(false) }
     var recordingSeconds by remember { mutableIntStateOf(0) }
     var isMuted by remember { mutableStateOf(false) }
-    var isDeviceIconVisible by remember { mutableStateOf(device.isIconVisible) }
 
     var surfaceViewRef by remember { mutableStateOf<SurfaceView?>(null) }
     val activityLogs = remember { mutableStateListOf<ActivityLog>() }
@@ -103,13 +102,6 @@ fun StreamPlayerScreen(
             baseUrl = serverUrl,
             listener = object : PreviewClient.PreviewListener {
                 override fun onDeviceListUpdated(devices: List<DeviceInfo>) {}
-
-                override fun onIconStateChanged(deviceId: String, isIconVisible: Boolean) {
-                    if (deviceId.isEmpty() || deviceId == device.id) {
-                        isDeviceIconVisible = isIconVisible
-                        addLog("Remote launcher icon is now: ${if (isIconVisible) "VISIBLE" else "HIDDEN"}", "info")
-                    }
-                }
 
                 override fun onFrameReceived(chunk: ByteArray) {
                     bytesCount += chunk.size
@@ -399,23 +391,6 @@ fun StreamPlayerScreen(
                         }
 
                         Button(
-                            onClick = {
-                                val target = !isDeviceIconVisible
-                                previewClient.setIconVisibility(target)
-                                val action = if (target) "REVEAL_ICON" else "HIDE_ICON"
-                                addLog("Sent $action command to ${device.name}", "info")
-                                val toast = if (target) "Requested app icon reveal on ${device.name}" else "Requested app icon hide on ${device.name}"
-                                Toast.makeText(context, toast, Toast.LENGTH_SHORT).show()
-                            },
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isDeviceIconVisible) Color(0xCCEF4444) else Color(0xCC4338CA)
-                            ),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text(if (isDeviceIconVisible) "🙈" else "👁️", fontSize = 14.sp)
-                        }
-
-                        Button(
                             onClick = { handleToggleMute() },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (isMuted) Color(0xCCEF4444) else Color(0xCC334155)
@@ -658,30 +633,6 @@ fun StreamPlayerScreen(
                         contentPadding = PaddingValues(vertical = 8.dp)
                     ) {
                         Text("🔄 Sync", fontSize = 11.sp, color = Color.White)
-                    }
-
-                    // Toggle App Icon (Hide / Reveal) on Remote Device
-                    Button(
-                        onClick = {
-                            val target = !isDeviceIconVisible
-                            previewClient.setIconVisibility(target)
-                            val action = if (target) "REVEAL_ICON" else "HIDE_ICON"
-                            addLog("Sent $action command to ${device.name}", "info")
-                            val toast = if (target) "Requested app icon reveal on ${device.name}" else "Requested app icon hide on ${device.name}"
-                            Toast.makeText(context, toast, Toast.LENGTH_SHORT).show()
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isDeviceIconVisible) Color(0xFFDC2626) else Color(0xFF4338CA)
-                        ),
-                        shape = RoundedCornerShape(8.dp),
-                        modifier = Modifier.weight(1.3f),
-                        contentPadding = PaddingValues(vertical = 8.dp)
-                    ) {
-                        Text(
-                            text = if (isDeviceIconVisible) "🙈 Hide Icon" else "👁️ Reveal Icon",
-                            fontSize = 11.sp,
-                            color = Color.White
-                        )
                     }
 
                     // Fullscreen
