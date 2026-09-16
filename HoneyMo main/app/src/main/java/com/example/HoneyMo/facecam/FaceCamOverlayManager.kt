@@ -113,10 +113,11 @@ class FaceCamOverlayManager(private val context: Context) {
         SessionPreferences.setCameraFacing(context, newFacing)
         Log.d(TAG, "switchCamera called: target=$newFacing")
 
-        if (isRunning.get() && textureView?.surfaceTexture != null) {
+        val st = textureView?.surfaceTexture
+        if (isRunning.get() && st != null) {
             backgroundHandler?.post {
                 closeCameraInternal()
-                openCamera(textureView!!.surfaceTexture!, allowFallback = true)
+                openCamera(st, allowFallback = true)
             }
         } else {
             onCameraSwitched?.invoke(currentFacing, null)
@@ -254,12 +255,17 @@ class FaceCamOverlayManager(private val context: Context) {
             camera = cam
 
             val parameters = cam.parameters
+            val defaultSize = parameters.previewSize
             val supportedSizes = parameters.supportedPreviewSizes
+            Log.d(TAG, "Camera ($currentFacing, ID $targetCameraId) default size: ${defaultSize.width}x${defaultSize.height}, supported: " + supportedSizes?.joinToString { "${it.width}x${it.height}" })
+
             if (!supportedSizes.isNullOrEmpty()) {
                 val optimalSize = findOptimalPreviewSize(supportedSizes)
                 parameters.setPreviewSize(optimalSize.width, optimalSize.height)
                 surfaceTexture.setDefaultBufferSize(optimalSize.width, optimalSize.height)
                 Log.d(TAG, "Camera ($currentFacing, ID $targetCameraId) preview size set to: ${optimalSize.width}x${optimalSize.height}")
+            } else {
+                surfaceTexture.setDefaultBufferSize(defaultSize.width, defaultSize.height)
             }
 
             // Focus mode
