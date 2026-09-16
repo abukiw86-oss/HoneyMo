@@ -308,12 +308,21 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
             setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second keyframe interval
-            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_VBR)
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2) // 2 second keyframe interval
+            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
 
-            // Critical for screen capture: repeat static frames so stream doesn't pause when screen is still
+            // Low latency encoder flags
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                setInteger(MediaFormat.KEY_LATENCY, 0)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                setInteger(MediaFormat.KEY_PRIORITY, 0)
+            }
+
+            // Critical for screen capture: repeat static frames at 5 fps (200ms) so stream doesn't pause when screen is still, while saving bandwidth and CPU
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 1_000_000L / fps)
+                setLong(MediaFormat.KEY_REPEAT_PREVIOUS_FRAME_AFTER, 200_000L)
             }
         }
 
@@ -331,9 +340,9 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
             while (isActive && isCapturing.get()) {
                 try {
-                    val outputIndex = enc.dequeueOutputBuffer(bufferInfo, 10_000L) // 10ms timeout
+                    var outputIndex = enc.dequeueOutputBuffer(bufferInfo, 1_000L) // 1ms poll
 
-                    if (outputIndex >= 0) {
+                    while (outputIndex >= 0 && isActive && isCapturing.get()) {
                         val outputBuffer: ByteBuffer? = enc.getOutputBuffer(outputIndex)
                         if (outputBuffer != null && bufferInfo.size > 0) {
                             outputBuffer.position(bufferInfo.offset)
@@ -366,7 +375,10 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                             fpsCounter++
                         }
                         enc.releaseOutputBuffer(outputIndex, false)
-                    } else if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        outputIndex = enc.dequeueOutputBuffer(bufferInfo, 0L)
+                    }
+
+                    if (outputIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         val newFormat = enc.outputFormat
                         Log.d(TAG, "Encoder output format changed: $newFormat")
                     }

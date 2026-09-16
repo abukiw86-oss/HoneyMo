@@ -126,8 +126,8 @@ class AudioCaptureEncoder(
 
             while (isActive && isCapturing.get()) {
                 try {
-                    val outIndex = enc.dequeueOutputBuffer(bufferInfo, 10_000L)
-                    if (outIndex >= 0) {
+                    var outIndex = enc.dequeueOutputBuffer(bufferInfo, 2_000L)
+                    while (outIndex >= 0 && isActive && isCapturing.get()) {
                         val outputBuffer: ByteBuffer? = enc.getOutputBuffer(outIndex)
                         if (outputBuffer != null && bufferInfo.size > 0) {
                             val isConfig = (bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0
@@ -145,6 +145,7 @@ class AudioCaptureEncoder(
                             }
                         }
                         enc.releaseOutputBuffer(outIndex, false)
+                        outIndex = enc.dequeueOutputBuffer(bufferInfo, 0L)
                     }
                 } catch (e: Exception) {
                     if (isCapturing.get()) {

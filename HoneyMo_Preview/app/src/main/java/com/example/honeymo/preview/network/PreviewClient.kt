@@ -21,6 +21,7 @@ class PreviewClient(
         fun onConnected()
         fun onDisconnected(reason: String)
         fun onError(error: String)
+        fun onPingUpdated(pingMs: Long) {}
     }
 
     companion object {
@@ -36,6 +37,7 @@ class PreviewClient(
     private var webSocket: WebSocket? = null
     private val isRunning = AtomicBoolean(false)
     private var currentDeviceId: String? = null
+    private var pingJob: Job? = null
     private val clientScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     fun fetchDevices() {
@@ -85,13 +87,20 @@ class PreviewClient(
                 if (deviceId != null) {
                     requestKeyframe()
                 }
+                startPingLoop()
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
                 try {
                     val json = JSONObject(text)
                     val type = json.optString("type")
-                    if (type == "DEVICE_LIST") {
+                    if (type == "PONG") {
+                        val sentTime = json.optLong("time")
+                        if (sentTime > 0) {
+                            val rtt = System.currentTimeMillis() - sentTime
+                            withContextUi { listener.onPingUpdated(rtt) }
+                        }
+                    } else if (type == "DEVICE_LIST") {
                         val array = json.optJSONArray("devices")
                         val list = mutableListOf<DeviceInfo>()
                         if (array != null) {
@@ -127,6 +136,26 @@ class PreviewClient(
         })
     }
 
+    private fun startPingLoop() {
+        pingJob?.cancel()
+        pingJob = clientScope.launch {
+            while (isActive && isRunning.get()) {
+                delay(2000)
+                if (isRunning.get() && webSocket != null) {
+                    try {
+                        val pingMsg = JSONObject().apply {
+                            put("type", "PING")
+                            put("time", System.currentTimeMillis())
+                        }
+                        webSocket?.send(pingMsg.toString())
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Error sending ping: ${e.message}")
+                    }
+                }
+            }
+        }
+    }
+
     fun requestKeyframe() {
         val devId = currentDeviceId ?: return
         val msg = JSONObject().apply {
@@ -139,6 +168,8 @@ class PreviewClient(
 
     fun disconnect() {
         isRunning.set(false)
+        pingJob?.cancel()
+        pingJob = null
         try {
             webSocket?.close(1000, "User disconnected")
         } catch (e: Exception) {

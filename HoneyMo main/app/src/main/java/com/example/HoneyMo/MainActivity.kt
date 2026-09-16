@@ -45,7 +45,7 @@ import kotlinx.coroutines.launch
 // Constant Stream Configuration
 private const val FIXED_SERVER_URL = "wss://honeymo-relay-server.onrender.com/ws/device"
 private const val FIXED_FPS = 15
-private const val FIXED_BITRATE = 2_000_000 // 2 Mbps
+private const val FIXED_BITRATE = 1_000_000 // 1 Mbps (lightweight, non-fluctuating)
 
 class MainActivity : ComponentActivity() {
 
@@ -413,7 +413,7 @@ fun ScreenCaptureApp(
                 ) {
                     MetricItem(label = "Resolution", value = "540p")
                     MetricItem(label = "Frame Rate", value = "15 FPS")
-                    MetricItem(label = "Bitrate", value = "2.0 Mbps")
+                    MetricItem(label = "Bitrate", value = "1.0 Mbps")
                 }
             }
         }

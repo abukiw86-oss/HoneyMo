@@ -379,6 +379,12 @@
         <span id="trafficVal" class="metric-value">0 <small style="font-size: 0.85rem; font-weight: normal;">MB</small></span>
         <span id="framesVal" class="metric-sub">0 frames decoded</span>
       </div>
+
+      <div class="metric-card">
+        <span class="metric-title">Latency / Ping</span>
+        <span id="pingVal" class="metric-value">-- <small style="font-size: 0.85rem; font-weight: normal;">ms</small></span>
+        <span id="pingSub" class="metric-sub">RTT to Relay</span>
+      </div>
     </div>
 
     <!-- Video Player Display -->
@@ -465,39 +471,46 @@
 
     // Initialize JMuxer player
     let jmuxer = null;
+    let currentDeviceFps = 15;
 
-    function initJMuxer() {
+    function initJMuxer(fps = 15) {
       if (jmuxer) {
         try { jmuxer.destroy(); } catch (e) {}
       }
+      currentDeviceFps = fps || 15;
       jmuxer = new JMuxer({
         node: 'player',
         mode: 'video',
         flushingTime: 0,
         clearBuffer: true,
-        fps: 30,
+        fps: currentDeviceFps,
         debug: false,
         onError: function(data) {
           log('JMuxer decode error: ' + JSON.stringify(data), 'warn');
         }
       });
-      log('JMuxer H.264 hardware player initialized', 'info');
+      log(`JMuxer H.264 hardware player initialized (${currentDeviceFps} fps)`, 'info');
     }
 
-    initJMuxer();
+    initJMuxer(15);
 
-    // Low Latency Auto-Catchup:
-    // If browser buffer builds up, jump directly to the live edge!
+    // Low Latency Auto-Catchup & Ping measurement:
     setInterval(() => {
+      // Send ping for RTT latency measurement
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'PING', time: Date.now() }));
+      }
+
+      // If browser buffer builds up, jump directly to the live edge!
       if (video && !video.paused && video.buffered.length > 0) {
         const liveEdge = video.buffered.end(video.buffered.length - 1);
         const delay = liveEdge - video.currentTime;
-        if (delay > 0.3) {
-          // If buffered more than 300ms behind, skip to live edge for lowest latency (~50-100ms)
+        if (delay > 0.8) {
+          // If buffered more than 800ms behind, skip to live edge for lowest latency (~50-100ms)
           video.currentTime = liveEdge - 0.05;
         }
       }
-    }, 500);
+    }, 2000);
 
     // WebSocket connection to Node.js backend
     let ws = null;
@@ -513,6 +526,7 @@
 
       ws.onopen = () => {
         log('Connected to HoneyMo Relay Server', 'success');
+        ws.send(JSON.stringify({ type: 'PING', time: Date.now() }));
       };
 
       ws.onmessage = (event) => {
@@ -535,7 +549,7 @@
           if (jmuxer) {
             jmuxer.feed({
               video: uint8,
-              duration: 33 // ~30 fps
+              duration: Math.round(1000 / (currentDeviceFps || 15))
             });
           }
         }
@@ -553,7 +567,15 @@
     }
 
     function handleControlMessage(msg) {
-      if (msg.type === 'INIT_STATUS' || msg.type === 'DEVICE_STATUS') {
+      if (msg.type === 'PONG') {
+        const now = Date.now();
+        const rtt = msg.time ? (now - msg.time) : 0;
+        const pingVal = document.getElementById('pingVal');
+        if (pingVal) {
+          pingVal.innerHTML = `${rtt} <small style="font-size: 0.85rem; font-weight: normal;">ms</small>`;
+          pingVal.style.color = rtt < 80 ? '#10B981' : (rtt < 180 ? '#F59E0B' : '#EF4444');
+        }
+      } else if (msg.type === 'INIT_STATUS' || msg.type === 'DEVICE_STATUS') {
         setDeviceStatus(msg.connected, msg.metadata);
       } else if (msg.type === 'DEVICE_INFO') {
         updateDeviceInfo(msg.metadata);
@@ -589,6 +611,9 @@
       }
       if (meta.fps) {
         document.getElementById('fpsSub').textContent = `Target: ${meta.fps} fps`;
+        if (currentDeviceFps !== meta.fps) {
+          initJMuxer(meta.fps);
+        }
       }
     }
 

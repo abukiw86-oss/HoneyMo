@@ -109,8 +109,8 @@ class AudioPlayer {
 
             while (isActive && isRunning.get()) {
                 try {
-                    val outIndex = dec.dequeueOutputBuffer(bufferInfo, 10_000L)
-                    if (outIndex >= 0) {
+                    var outIndex = dec.dequeueOutputBuffer(bufferInfo, 2_000L)
+                    while (outIndex >= 0 && isActive && isRunning.get()) {
                         val outputBuffer: ByteBuffer? = dec.getOutputBuffer(outIndex)
                         if (outputBuffer != null && bufferInfo.size > 0) {
                             outputBuffer.position(bufferInfo.offset)
@@ -124,6 +124,7 @@ class AudioPlayer {
                             }
                         }
                         dec.releaseOutputBuffer(outIndex, false)
+                        outIndex = dec.dequeueOutputBuffer(bufferInfo, 0L)
                     }
                 } catch (e: Exception) {
                     if (isRunning.get()) {

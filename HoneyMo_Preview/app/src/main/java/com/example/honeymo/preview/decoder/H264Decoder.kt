@@ -2,6 +2,7 @@ package com.example.honeymo.preview.decoder
 
 import android.media.MediaCodec
 import android.media.MediaFormat
+import android.os.Build
 import android.util.Log
 import android.view.Surface
 import kotlinx.coroutines.*
@@ -34,7 +35,15 @@ class H264Decoder(
 
         try {
             Log.d(TAG, "Starting hardware H.264 decoder with surface (${width}x${height})...")
-            val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height)
+            val format = MediaFormat.createVideoFormat(MIME_TYPE, width, height).apply {
+                // Low latency decoding flags on supported Android versions
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+                }
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
+                }
+            }
 
             decoder = MediaCodec.createDecoderByType(MIME_TYPE).apply {
                 configure(format, surface, null, 0)
@@ -57,7 +66,7 @@ class H264Decoder(
         if (!isRunning.get()) return
 
         try {
-            val inIndex = dec.dequeueInputBuffer(10_000L) // 10ms timeout
+            val inIndex = dec.dequeueInputBuffer(1_000L) // 1ms non-blocking timeout
             if (inIndex >= 0) {
                 val inputBuffer: ByteBuffer? = dec.getInputBuffer(inIndex)
                 if (inputBuffer != null) {
@@ -86,13 +95,16 @@ class H264Decoder(
 
             while (isActive && isRunning.get()) {
                 try {
-                    val outIndex = dec.dequeueOutputBuffer(bufferInfo, 10_000L)
+                    var outIndex = dec.dequeueOutputBuffer(bufferInfo, 2_000L)
 
-                    if (outIndex >= 0) {
-                        // Render directly to Surface
+                    while (outIndex >= 0 && isActive && isRunning.get()) {
+                        // Render directly to Surface with zero delay
                         dec.releaseOutputBuffer(outIndex, true)
                         frameCount++
-                    } else if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        outIndex = dec.dequeueOutputBuffer(bufferInfo, 0L)
+                    }
+
+                    if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         Log.d(TAG, "Decoder output format changed: ${dec.outputFormat}")
                     }
                 } catch (e: Exception) {

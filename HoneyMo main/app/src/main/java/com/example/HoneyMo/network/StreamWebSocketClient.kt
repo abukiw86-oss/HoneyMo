@@ -26,7 +26,7 @@ class StreamWebSocketClient(
 
     companion object {
         private const val TAG = "StreamWS"
-        private const val MAX_QUEUE_SIZE_BYTES = 1024 * 1024 // 1 MB
+        private const val MAX_QUEUE_SIZE_BYTES = 128 * 1024 // 128 KB (CBR 1Mbps: caps buffering latency to ~1s)
     }
 
     private var client: OkHttpClient = OkHttpClient.Builder()
@@ -59,11 +59,21 @@ class StreamWebSocketClient(
             }
 
             override fun onMessage(ws: WebSocket, text: String) {
-                Log.d(TAG, "Received message from server: $text")
                 try {
                     val json = JSONObject(text)
                     when (json.optString("type")) {
-                        "REQUEST_KEYFRAME" -> listener.onKeyframeRequested()
+                        "REQUEST_KEYFRAME" -> {
+                            Log.d(TAG, "Server requested keyframe")
+                            listener.onKeyframeRequested()
+                        }
+                        "PING" -> {
+                            val pong = JSONObject().apply {
+                                put("type", "PONG")
+                                put("time", json.optLong("time"))
+                                put("serverTime", System.currentTimeMillis())
+                            }
+                            ws.send(pong.toString())
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to parse message: ${e.message}")

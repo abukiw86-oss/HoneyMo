@@ -59,6 +59,25 @@ function extractSpsPps(buffer) {
   return hasSps || hasPps;
 }
 
+function isKeyFrameOrConfig(buffer) {
+  const len = buffer.length;
+  for (let i = 0; i < Math.min(len - 4, 64); i++) {
+    if (buffer[i] === 0 && buffer[i + 1] === 0) {
+      let nalStart = -1;
+      if (buffer[i + 2] === 1) {
+        nalStart = i + 3;
+      } else if (buffer[i + 2] === 0 && buffer[i + 3] === 1) {
+        nalStart = i + 4;
+      }
+      if (nalStart !== -1 && nalStart < len) {
+        const nalType = buffer[nalStart] & 0x1F;
+        if (nalType === 5 || nalType === 7 || nalType === 8) return true;
+      }
+    }
+  }
+  return false;
+}
+
 function getDeviceList() {
   const list = [];
   for (const [id, dev] of activeDevices.entries()) {
@@ -90,7 +109,7 @@ function broadcastDeviceListToViewers() {
 }
 
 // --------------------------------------------------------------------------
-// WebSocket Heartbeat / Ping-Pong (Keeps Render proxy connection alive)
+// WebSocket Heartbeat / Ping-Pong (Keeps Render proxy connection alive & low latency)
 // --------------------------------------------------------------------------
 const heartbeatInterval = setInterval(() => {
   wssDevice.clients.forEach((ws) => {
@@ -103,11 +122,14 @@ const heartbeatInterval = setInterval(() => {
     ws.isAlive = false;
     ws.ping();
   });
-}, 30000); // 30s interval for Render reverse proxy
+}, 15000); // 15s interval for reliable proxy keep-alive
 
 function setupHeartbeat(ws) {
   ws.isAlive = true;
   ws.on('pong', () => {
+    ws.isAlive = true;
+  });
+  ws.on('ping', () => {
     ws.isAlive = true;
   });
 }
@@ -169,9 +191,14 @@ wssDevice.on('connection', (ws, req) => {
       }
 
       // Forward binary H.264 frame to viewers subscribed to this device
+      const isKeyOrConfig = isKeyFrameOrConfig(message);
       wssViewer.clients.forEach((viewer) => {
         if (viewer.readyState === WebSocket.OPEN) {
           if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+            // Drop P-frames if viewer socket buffer is congested (> 128 KB)
+            if (!isKeyOrConfig && viewer.bufferedAmount > 128 * 1024) {
+              return;
+            }
             viewer.send(message, { binary: true });
           }
         }
@@ -182,7 +209,13 @@ wssDevice.on('connection', (ws, req) => {
         const text = message.toString();
         const data = JSON.parse(text);
 
-        if (data.type === 'INIT') {
+        if (data.type === 'PING') {
+          ws.send(JSON.stringify({
+            type: 'PONG',
+            time: data.time || data.t,
+            serverTime: Date.now()
+          }));
+        } else if (data.type === 'INIT') {
           if (data.deviceId) {
             activeDevices.delete(deviceId);
             deviceId = data.deviceId;
@@ -248,7 +281,13 @@ wssViewer.on('connection', (ws, req) => {
     try {
       const data = JSON.parse(message.toString());
 
-      if (data.type === 'GET_DEVICES') {
+      if (data.type === 'PING') {
+        ws.send(JSON.stringify({
+          type: 'PONG',
+          time: data.time || data.t,
+          serverTime: Date.now()
+        }));
+      } else if (data.type === 'GET_DEVICES') {
         ws.send(JSON.stringify({
           type: 'DEVICE_LIST',
           devices: getDeviceList()
@@ -345,17 +384,6 @@ app.get('/api/devices/:id', (req, res) => {
       stats: dev.stats
     }
   });
-});
-
-app.post('/api/devices/:id/reveal-icon', (req, res) => {
-  const dev = activeDevices.get(req.params.id);
-  if (!dev) return res.status(404).json({ error: 'Device not found' });
-  if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
-    dev.ws.send(JSON.stringify({ type: 'REVEAL_ICON' }));
-    console.log(`[REST] Sent REVEAL_ICON command to device ${dev.id}`);
-    return res.json({ status: 'ok', message: 'Reveal icon command sent' });
-  }
-  return res.status(503).json({ error: 'Device socket not connected' });
 });
 
 app.get('/api/status', (req, res) => {

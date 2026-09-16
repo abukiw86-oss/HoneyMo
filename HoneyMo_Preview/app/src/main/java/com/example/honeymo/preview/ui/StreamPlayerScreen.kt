@@ -65,6 +65,7 @@ fun StreamPlayerScreen(
 ) {
     val context = LocalContext.current
     var liveFps by remember { mutableIntStateOf(0) }
+    var livePing by remember { mutableLongStateOf(-1L) }
     var framesCount by remember { mutableLongStateOf(0L) }
     var bytesCount by remember { mutableLongStateOf(0L) }
     var connectionState by remember { mutableStateOf("Connecting...") }
@@ -126,12 +127,18 @@ fun StreamPlayerScreen(
 
                 override fun onDisconnected(reason: String) {
                     connectionState = "Disconnected"
+                    livePing = -1L
                     addLog("Relay disconnected: $reason", "warn")
                 }
 
                 override fun onError(error: String) {
                     connectionState = "Error"
+                    livePing = -1L
                     addLog("Connection error: $error", "error")
+                }
+
+                override fun onPingUpdated(pingMs: Long) {
+                    livePing = pingMs
                 }
             }
         )
@@ -345,28 +352,51 @@ fun StreamPlayerScreen(
                             Text("⛶ Exit Fullscreen", color = Color.White, fontSize = 12.sp)
                         }
 
-                        // Recording indicator
-                        if (isRecording) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(20.dp))
-                                    .background(Color(0xCCEF4444))
-                                    .padding(horizontal = 12.dp, vertical = 6.dp)
-                            ) {
-                                Box(
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            if (livePing >= 0) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(4.dp),
                                     modifier = Modifier
-                                        .size(10.dp)
-                                        .clip(CircleShape)
-                                        .background(Color.White)
-                                )
-                                Text(
-                                    text = "REC %02d:%02d".format(recordingSeconds / 60, recordingSeconds % 60),
-                                    color = Color.White,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 12.sp
-                                )
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(Color(0x990F172A))
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = "⚡ $livePing ms",
+                                        color = if (livePing < 100) Color(0xFF10B981) else if (livePing < 250) Color(0xFFF59E0B) else Color(0xFFEF4444),
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+
+                            // Recording indicator
+                            if (isRecording) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(20.dp))
+                                        .background(Color(0xCCEF4444))
+                                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(10.dp)
+                                            .clip(CircleShape)
+                                            .background(Color.White)
+                                    )
+                                    Text(
+                                        text = "REC %02d:%02d".format(recordingSeconds / 60, recordingSeconds % 60),
+                                        color = Color.White,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp
+                                    )
+                                }
                             }
                         }
                     }
@@ -492,7 +522,7 @@ fun StreamPlayerScreen(
                         .background(if (connectionState == "Live") Color(0xFF10B981) else Color(0xFFEF4444))
                 )
                 Text(
-                    text = connectionState.uppercase(),
+                    text = if (connectionState == "Live" && livePing >= 0) "LIVE • ${livePing}ms" else connectionState.uppercase(),
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
                     color = if (connectionState == "Live") Color(0xFF10B981) else Color(0xFFEF4444)
@@ -512,9 +542,9 @@ fun StreamPlayerScreen(
                 modifier = Modifier.weight(1f)
             )
             MetricCard(
-                title = "Audio",
-                value = if (isMuted) "Muted" else "Live",
-                subtitle = "AAC 44.1kHz Voice",
+                title = "Latency / Ping",
+                value = if (livePing >= 0) "$livePing ms" else "-- ms",
+                subtitle = "WebSocket RTT",
                 modifier = Modifier.weight(1f)
             )
         }
@@ -524,15 +554,15 @@ fun StreamPlayerScreen(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             MetricCard(
-                title = "Resolution",
-                value = "${device.width} x ${device.height}",
-                subtitle = "Aspect 540p",
-                modifier = Modifier.weight(1f)
-            )
-            MetricCard(
                 title = "Transferred",
                 value = "%.1f MB".format(bytesCount / (1024f * 1024f)),
                 subtitle = "$framesCount frames",
+                modifier = Modifier.weight(1f)
+            )
+            MetricCard(
+                title = "Resolution",
+                value = "${device.width} x ${device.height}",
+                subtitle = "Aspect 540p",
                 modifier = Modifier.weight(1f)
             )
         }
