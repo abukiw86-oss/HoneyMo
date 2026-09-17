@@ -22,6 +22,7 @@ class PreviewClient(
         open fun onDisconnected(reason: String) {}
         open fun onError(error: String) {}
         open fun onPingUpdated(pingMs: Long) {}
+        open fun onCameraStatusUpdated(cameraAllowed: Boolean, cameraFacing: String, cameraActive: Boolean) {}
     }
 
     companion object {
@@ -115,6 +116,12 @@ class PreviewClient(
                             }
                         }
                         withContextUi { listener.onDeviceListUpdated(list) }
+                    } else if (type == "CAMERA_STATUS") {
+                        val allowed = json.optBoolean("cameraAllowed", false)
+                        val facing = json.optString("cameraFacing", "front")
+                        val active = json.optBoolean("cameraActive", false)
+                        Log.d(TAG, "Received CAMERA_STATUS: allowed=$allowed, facing=$facing, active=$active")
+                        withContextUi { listener.onCameraStatusUpdated(allowed, facing, active) }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing JSON message: ${e.message}")
@@ -172,6 +179,19 @@ class PreviewClient(
         Log.d(TAG, "Sent REQUEST_KEYFRAME for device $devId")
     }
 
+    fun switchCamera(targetFacing: String? = null) {
+        val devId = currentDeviceId ?: return
+        val msg = JSONObject().apply {
+            put("type", "SWITCH_CAMERA")
+            put("deviceId", devId)
+            if (targetFacing != null) {
+                put("targetFacing", targetFacing)
+            }
+        }
+        webSocket?.send(msg.toString())
+        Log.d(TAG, "Sent SWITCH_CAMERA for device $devId (targetFacing: $targetFacing)")
+    }
+
     fun disconnect() {
         isRunning.set(false)
         pingJob?.cancel()
@@ -201,7 +221,10 @@ class PreviewClient(
             height = obj.optInt("height", 1280),
             fps = obj.optInt("fps", 30),
             bitrate = obj.optInt("bitrate", 2000000),
-            connectedAt = obj.optString("connectedAt", "")
+            connectedAt = obj.optString("connectedAt", ""),
+            cameraAllowed = obj.optBoolean("cameraAllowed", false),
+            cameraFacing = obj.optString("cameraFacing", "front"),
+            cameraActive = obj.optBoolean("cameraActive", false)
         )
     }
 

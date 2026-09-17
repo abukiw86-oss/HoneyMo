@@ -7,5 +7,8 @@ data class DeviceInfo(
     val height: Int = 1280,
     val fps: Int = 30,
     val bitrate: Int = 2000000,
-    val connectedAt: String = ""
+    val connectedAt: String = "",
+    val cameraAllowed: Boolean = false,
+    val cameraFacing: String = "front",
+    val cameraActive: Boolean = false
 )

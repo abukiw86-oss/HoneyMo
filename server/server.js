@@ -88,6 +88,9 @@ function getDeviceList() {
       height: dev.height,
       fps: dev.fps,
       bitrate: dev.bitrate,
+      cameraAllowed: dev.cameraAllowed || false,
+      cameraFacing: dev.cameraFacing || 'front',
+      cameraActive: dev.cameraActive || false,
       connectedAt: dev.connectedAt,
       stats: dev.stats
     });
@@ -155,6 +158,9 @@ wssDevice.on('connection', (ws, req) => {
     height: 1280,
     fps: 30,
     bitrate: 2000000,
+    cameraAllowed: false,
+    cameraFacing: 'front',
+    cameraActive: false,
     connectedAt: new Date().toISOString(),
     cachedConfig: null,
     stats: {
@@ -246,8 +252,35 @@ wssDevice.on('connection', (ws, req) => {
           if (data.height) deviceRecord.height = data.height;
           if (data.fps) deviceRecord.fps = data.fps;
           if (data.bitrate) deviceRecord.bitrate = data.bitrate;
+          if (data.cameraAllowed !== undefined) deviceRecord.cameraAllowed = Boolean(data.cameraAllowed);
+          if (data.cameraFacing !== undefined) deviceRecord.cameraFacing = data.cameraFacing;
+          if (data.cameraActive !== undefined) deviceRecord.cameraActive = Boolean(data.cameraActive);
 
-          console.log(`[Device] Registered ${deviceRecord.name} [${deviceId}] (${deviceRecord.width}x${deviceRecord.height} @ ${deviceRecord.fps}fps)`);
+          console.log(`[Device] Registered ${deviceRecord.name} [${deviceId}] (${deviceRecord.width}x${deviceRecord.height} @ ${deviceRecord.fps}fps, camAllowed=${deviceRecord.cameraAllowed}, camFacing=${deviceRecord.cameraFacing})`);
+          broadcastDeviceListToViewers();
+        } else if (data.type === 'CAMERA_STATUS') {
+          if (data.cameraAllowed !== undefined) deviceRecord.cameraAllowed = Boolean(data.cameraAllowed);
+          if (data.cameraFacing !== undefined) deviceRecord.cameraFacing = data.cameraFacing;
+          if (data.cameraActive !== undefined) deviceRecord.cameraActive = Boolean(data.cameraActive);
+
+          console.log(`[Device] Camera status for ${deviceId}: allowed=${deviceRecord.cameraAllowed}, facing=${deviceRecord.cameraFacing}, active=${deviceRecord.cameraActive}`);
+
+          const camPayload = JSON.stringify({
+            type: 'CAMERA_STATUS',
+            deviceId: deviceId,
+            cameraAllowed: deviceRecord.cameraAllowed,
+            cameraFacing: deviceRecord.cameraFacing,
+            cameraActive: deviceRecord.cameraActive
+          });
+
+          wssViewer.clients.forEach((viewer) => {
+            if (viewer.readyState === WebSocket.OPEN) {
+              if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+                viewer.send(camPayload);
+              }
+            }
+          });
+
           broadcastDeviceListToViewers();
         }
       } catch (err) {
@@ -327,6 +360,18 @@ wssViewer.on('connection', (ws, req) => {
             console.log(`[Viewer] Requested keyframe from device ${devId}`);
           }
         }
+      } else if (data.type === 'SWITCH_CAMERA') {
+        const devId = data.deviceId || ws.subscribedDeviceId;
+        if (devId && activeDevices.has(devId)) {
+          const dev = activeDevices.get(devId);
+          if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
+            dev.ws.send(JSON.stringify({
+              type: 'SWITCH_CAMERA',
+              targetFacing: data.targetFacing || null
+            }));
+            console.log(`[Viewer] Forwarded SWITCH_CAMERA to device ${devId} (targetFacing: ${data.targetFacing || 'toggle'})`);
+          }
+        }
       }
     } catch (e) {
       console.error('[Viewer Message Error]', e.message);
@@ -340,6 +385,17 @@ wssViewer.on('connection', (ws, req) => {
 
 function sendCachedConfigAndKeyframe(viewerWs, dev) {
   if (!dev) return;
+  if (viewerWs.readyState === WebSocket.OPEN) {
+    try {
+      viewerWs.send(JSON.stringify({
+        type: 'CAMERA_STATUS',
+        deviceId: dev.id,
+        cameraAllowed: dev.cameraAllowed || false,
+        cameraFacing: dev.cameraFacing || 'front',
+        cameraActive: dev.cameraActive || false
+      }));
+    } catch (e) {}
+  }
   if (dev.cachedConfig && viewerWs.readyState === WebSocket.OPEN) {
     viewerWs.send(dev.cachedConfig, { binary: true });
   }
@@ -399,6 +455,9 @@ app.get('/api/devices/:id', (req, res) => {
       height: dev.height,
       fps: dev.fps,
       bitrate: dev.bitrate,
+      cameraAllowed: dev.cameraAllowed || false,
+      cameraFacing: dev.cameraFacing || 'front',
+      cameraActive: dev.cameraActive || false,
       connectedAt: dev.connectedAt,
       stats: dev.stats
     }

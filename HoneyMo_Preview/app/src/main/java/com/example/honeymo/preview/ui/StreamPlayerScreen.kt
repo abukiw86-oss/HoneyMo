@@ -69,6 +69,15 @@ fun StreamPlayerScreen(
     var bytesCount by remember { mutableLongStateOf(0L) }
     var connectionState by remember { mutableStateOf("Connecting...") }
 
+    var isCameraAllowed by remember { mutableStateOf(device.cameraAllowed) }
+    var currentCameraFacing by remember { mutableStateOf(device.cameraFacing) }
+    var isCameraActive by remember { mutableStateOf(device.cameraActive) }
+
+    val isFacingFront = currentCameraFacing.equals("front", ignoreCase = true)
+    val nextFacing = if (isFacingFront) "back" else "front"
+    val nextFacingLabel = if (isFacingFront) "Back" else "Front (Selfie)"
+    val currentFacingLabel = if (isFacingFront) "Front (Selfie)" else "Back"
+
     var isFullscreen by remember { mutableStateOf(false) }
     var showFullscreenControls by remember { mutableStateOf(true) }
 
@@ -98,7 +107,14 @@ fun StreamPlayerScreen(
         PreviewClient(
             baseUrl = serverUrl,
             listener = object : PreviewClient.PreviewListener() {
-                override fun onDeviceListUpdated(devices: List<DeviceInfo>) {}
+                override fun onDeviceListUpdated(devices: List<DeviceInfo>) {
+                    val matching = devices.find { it.id == device.id }
+                    if (matching != null) {
+                        isCameraAllowed = matching.cameraAllowed
+                        currentCameraFacing = matching.cameraFacing
+                        isCameraActive = matching.cameraActive
+                    }
+                }
 
                 override fun onFrameReceived(chunk: ByteArray) {
                     bytesCount += chunk.size
@@ -127,8 +143,32 @@ fun StreamPlayerScreen(
                 override fun onPingUpdated(pingMs: Long) {
                     livePing = pingMs
                 }
+
+                override fun onCameraStatusUpdated(cameraAllowed: Boolean, cameraFacing: String, cameraActive: Boolean) {
+                    val changed = isCameraAllowed != cameraAllowed || currentCameraFacing != cameraFacing
+                    isCameraAllowed = cameraAllowed
+                    currentCameraFacing = cameraFacing
+                    isCameraActive = cameraActive
+                    if (changed) {
+                        if (cameraAllowed) {
+                            addLog("Streamer camera active: Facing ${cameraFacing.replaceFirstChar { it.uppercase() }}", "info")
+                        } else {
+                            addLog("Streamer camera permission not granted", "warn")
+                        }
+                    }
+                }
             }
         )
+    }
+
+    fun handleSwitchCamera() {
+        if (!isCameraAllowed) {
+            Toast.makeText(context, "Camera permission not granted on streamer device", Toast.LENGTH_SHORT).show()
+            return
+        }
+        previewClient.switchCamera(nextFacing)
+        addLog("Requested camera switch to $nextFacingLabel", "info")
+        Toast.makeText(context, "Switching to $nextFacingLabel camera...", Toast.LENGTH_SHORT).show()
     }
 
     // Storage permission launcher for Android 9 / legacy environments
@@ -413,6 +453,25 @@ fun StreamPlayerScreen(
                             Text("📸 Shot", color = Color.White, fontSize = 12.sp)
                         }
 
+                        // Remote Camera Flip Button (Enabled only if streamer camera permission granted)
+                        Button(
+                            onClick = { handleSwitchCamera() },
+                            enabled = isCameraAllowed,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = Color(0xCC6366F1),
+                                disabledContainerColor = Color(0x66334155),
+                                contentColor = Color.White,
+                                disabledContentColor = Color(0x8894A3B8)
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text(
+                                text = if (isCameraAllowed) (if (isFacingFront) "🔄 To Back" else "🔄 To Front") else "🔒 No Cam",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
                         Button(
                             onClick = { handleToggleRecord() },
                             colors = ButtonDefaults.buttonColors(
@@ -666,6 +725,112 @@ fun StreamPlayerScreen(
                         )
                     }
                 }
+            }
+        }
+
+        // 5. Remote Camera Switcher Control Card (Enabled ONLY if streamer granted camera permission)
+        Card(
+            colors = CardDefaults.cardColors(
+                containerColor = if (isCameraAllowed) Color(0xFF1E293B) else Color(0xFF191F2D)
+            ),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Column(
+                modifier = Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (!isCameraAllowed) "🚫" else if (isFacingFront) "🤳" else "📷",
+                            fontSize = 18.sp
+                        )
+                        Text(
+                            text = "Streamer Camera Lens",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+
+                    // Permission & Status Pill
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(
+                                if (isCameraAllowed) Color(0x2610B981) else Color(0x26EF4444)
+                            )
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(7.dp)
+                                .clip(CircleShape)
+                                .background(if (isCameraAllowed) Color(0xFF10B981) else Color(0xFFEF4444))
+                        )
+                        Text(
+                            text = if (isCameraAllowed) "FACING: ${currentFacingLabel.uppercase()}" else "PERMISSION NOT GRANTED",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (isCameraAllowed) Color(0xFF10B981) else Color(0xFFEF4444)
+                        )
+                    }
+                }
+
+                // Camera Switch Button
+                Button(
+                    onClick = { handleSwitchCamera() },
+                    enabled = isCameraAllowed,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(0xFF6366F1),
+                        disabledContainerColor = Color(0xFF272D3B),
+                        contentColor = Color.White,
+                        disabledContentColor = Color(0xFF64748B)
+                    ),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(vertical = 12.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = if (isCameraAllowed) "🔄" else "🔒",
+                            fontSize = 15.sp
+                        )
+                        Text(
+                            text = if (isCameraAllowed) {
+                                "SWITCH CAMERA (FLIP TO ${nextFacingLabel.uppercase()})"
+                            } else {
+                                "CAMERA SWITCH DISABLED (PERMISSION REQUIRED ON STREAMER)"
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+
+                Text(
+                    text = if (isCameraAllowed) {
+                        "Remotely switch between front selfie and back camera. Composited into the stream at 1/4th screen width (bottom-left)."
+                    } else {
+                        "⚠️ The streamer has not granted camera permission in the HoneyMo main app. Once the streamer allows camera permission, this switch button will automatically unlock."
+                    },
+                    fontSize = 11.sp,
+                    color = if (isCameraAllowed) Color(0xFF94A3B8) else Color(0xFFF87171),
+                    lineHeight = 15.sp
+                )
             }
         }
 

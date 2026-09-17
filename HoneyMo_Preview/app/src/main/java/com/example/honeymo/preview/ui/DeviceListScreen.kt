@@ -209,7 +209,8 @@ fun DeviceCard(device: DeviceInfo, onClick: () -> Unit) {
                     color = Color.White
                 )
                 Text(
-                    text = "${device.width}x${device.height} • ${device.fps} FPS • ${(device.bitrate / 1_000_000f).toInt()} Mbps",
+                    text = "${device.width}x${device.height} • ${device.fps} FPS" +
+                        (if (device.cameraAllowed) " • 📷 Cam (${device.cameraFacing.replaceFirstChar { it.uppercase() }})" else " • 🔒 No Cam"),
                     fontSize = 12.sp,
                     color = Color(0xFF94A3B8)
                 )

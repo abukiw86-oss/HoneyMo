@@ -168,6 +168,7 @@ fun ScreenCaptureApp(
                 context.startService(intent)
             }
         } else {
+            ScreenCaptureService.instance?.sendCurrentCameraStatus()
             Toast.makeText(context, "Camera permission is required for Camera stream", Toast.LENGTH_SHORT).show()
         }
     }

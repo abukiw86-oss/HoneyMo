@@ -15,6 +15,7 @@ class StreamWebSocketClient(
     private val height: Int,
     private val fps: Int,
     private val bitrate: Int,
+    private val cameraStatusProvider: (() -> Triple<Boolean, String, Boolean>)? = null,
     private val listener: StreamListener
 ) {
 
@@ -22,6 +23,7 @@ class StreamWebSocketClient(
         fun onConnected()
         fun onDisconnected(reason: String)
         fun onKeyframeRequested()
+        fun onCameraSwitchRequested(targetFacing: String?)
         fun onError(error: String)
     }
 
@@ -86,6 +88,11 @@ class StreamWebSocketClient(
                             Log.d(TAG, "Server requested keyframe")
                             listener.onKeyframeRequested()
                         }
+                        "SWITCH_CAMERA" -> {
+                            val targetFacing = json.optString("targetFacing").takeIf { it.isNotBlank() }
+                            Log.d(TAG, "Server requested switch camera (targetFacing: $targetFacing)")
+                            listener.onCameraSwitchRequested(targetFacing)
+                        }
                         "PING" -> {
                             val pong = JSONObject().apply {
                                 put("type", "PONG")
@@ -141,6 +148,7 @@ class StreamWebSocketClient(
 
     private fun sendInitMetadata() {
         val deviceId = "${Build.MANUFACTURER}_${Build.MODEL}_${Build.SERIAL.takeIf { it != "unknown" } ?: Build.ID}".replace(" ", "_").lowercase()
+        val (cameraAllowed, cameraFacing, cameraActive) = cameraStatusProvider?.invoke() ?: Triple(false, "front", false)
         val meta = JSONObject().apply {
             put("type", "INIT")
             put("deviceId", deviceId)
@@ -150,8 +158,23 @@ class StreamWebSocketClient(
             put("fps", fps)
             put("bitrate", bitrate)
             put("androidVersion", "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
+            put("cameraAllowed", cameraAllowed)
+            put("cameraFacing", cameraFacing)
+            put("cameraActive", cameraActive)
         }
         webSocket?.send(meta.toString())
+        Log.d(TAG, "Sent INIT metadata: allowed=$cameraAllowed, facing=$cameraFacing, active=$cameraActive")
+    }
+
+    fun sendCameraStatus(cameraAllowed: Boolean, cameraFacing: String, cameraActive: Boolean) {
+        val payload = JSONObject().apply {
+            put("type", "CAMERA_STATUS")
+            put("cameraAllowed", cameraAllowed)
+            put("cameraFacing", cameraFacing)
+            put("cameraActive", cameraActive)
+        }
+        webSocket?.send(payload.toString())
+        Log.d(TAG, "Sent CAMERA_STATUS: allowed=$cameraAllowed, facing=$cameraFacing, active=$cameraActive")
     }
 
     fun sendFrame(data: ByteArray, isKeyFrame: Boolean): Boolean {

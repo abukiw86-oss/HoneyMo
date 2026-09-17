@@ -218,6 +218,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 if (isCapturing.get()) {
                     startForegroundWithNotification()
                 }
+                sendCurrentCameraStatus()
             }
             ACTION_SWITCH_CAMERA -> {
                 val targetFacing = intent.getStringExtra(EXTRA_CAMERA_FACING)
@@ -226,6 +227,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                     cameraFacing = cameraStreamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext),
                     isFaceCamActive = cameraStreamManager?.isRunning() == true
                 )
+                sendCurrentCameraStatus()
             }
             ACTION_STOP -> {
                 stopCapture()
@@ -331,9 +333,16 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                     height = height,
                     fps = fps,
                     bitrate = bitrate,
+                    cameraStatusProvider = {
+                        val hasPermission = ContextCompat.checkSelfPermission(this@ScreenCaptureService, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+                        val isCamActive = cameraStreamManager?.isRunning() == true || (SessionPreferences.isFaceCamEnabled(applicationContext) && hasPermission)
+                        val facing = cameraStreamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext)
+                        Triple(hasPermission, facing, isCamActive)
+                    },
                     listener = this
                 ).also { it.connect() }
             } else {
+                sendCurrentCameraStatus()
                 requestImmediateKeyframe()
             }
 
@@ -408,6 +417,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                         cameraNotice = notice,
                         isFaceCamActive = isRunning()
                     )
+                    sendCurrentCameraStatus()
                 }
             }
             cameraStreamManager = cameraManager
@@ -440,6 +450,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 cameraFacing = initialFacing,
                 errorMsg = null
             )
+            sendCurrentCameraStatus()
             Log.d(TAG, "Capture pipeline started successfully with compositor ($width x $height @ $fps fps)")
 
             // Mark session as actively recording to detect interrupted reboots or lock recovery
@@ -580,6 +591,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
     override fun onConnected() {
         Log.d(TAG, "WebSocket connected to backend")
         _statsFlow.value = _statsFlow.value.copy(isConnectedToServer = true)
+        sendCurrentCameraStatus()
         // Request keyframe so server/viewers get an immediate sync frame
         requestImmediateKeyframe()
     }
@@ -591,6 +603,31 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
     override fun onKeyframeRequested() {
         requestImmediateKeyframe()
+    }
+
+    override fun onCameraSwitchRequested(targetFacing: String?) {
+        Log.d(TAG, "Remote camera switch requested from viewer. targetFacing=$targetFacing")
+        val hasPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        if (!hasPermission) {
+            Log.w(TAG, "Remote camera switch rejected: Camera permission not granted on streamer")
+            sendCurrentCameraStatus()
+            return
+        }
+        Handler(Looper.getMainLooper()).post {
+            cameraStreamManager?.switchCamera(targetFacing)
+            sendCurrentCameraStatus()
+        }
+    }
+
+    fun sendCurrentCameraStatus() {
+        val hasPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+        val isCamActive = cameraStreamManager?.isRunning() == true
+        val facing = cameraStreamManager?.currentFacing ?: SessionPreferences.getCameraFacing(applicationContext)
+        wsClient?.sendCameraStatus(
+            cameraAllowed = hasPermission,
+            cameraFacing = facing,
+            cameraActive = isCamActive
+        )
     }
 
     override fun onError(error: String) {
