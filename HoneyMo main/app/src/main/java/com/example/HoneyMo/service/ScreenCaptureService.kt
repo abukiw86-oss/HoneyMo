@@ -340,6 +340,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             // Get MediaProjection (Only called AFTER startForeground!)
             val mpManager = getSystemService(Context.MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
             mediaProjection = mpManager.getMediaProjection(resultCode, data)
+            SessionPreferences.setRecordingActive(applicationContext, true)
 
             // Register callback with intentional stop guard
             val callback = object : MediaProjection.Callback() {

