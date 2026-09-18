@@ -51,6 +51,8 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         const val EXTRA_ENABLE_FACECAM = "EXTRA_ENABLE_FACECAM"
         const val ACTION_SWITCH_CAMERA = "ACTION_SWITCH_CAMERA"
         const val EXTRA_CAMERA_FACING = "EXTRA_CAMERA_FACING"
+        const val ACTION_TOGGLE_MIC = "ACTION_TOGGLE_MIC"
+        const val EXTRA_ENABLE_MIC = "EXTRA_ENABLE_MIC"
 
         const val EXTRA_RESULT_CODE = "EXTRA_RESULT_CODE"
         const val EXTRA_DATA = "EXTRA_DATA"
@@ -68,6 +70,8 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             val isFaceCamActive: Boolean = false,
             val cameraFacing: String = SessionPreferences.CAMERA_FACING_FRONT,
             val cameraNotice: String? = null,
+            val isMicActive: Boolean = false,
+            val isMicMuted: Boolean = false,
             val framesSent: Long = 0,
             val bytesSent: Long = 0,
             val currentFps: Int = 0,
@@ -86,6 +90,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
     private var frameCompositor: StreamFrameCompositor? = null
     private var cameraStreamManager: CameraStreamManager? = null
+    private var audioStreamManager: com.example.HoneyMo.audio.AudioStreamManager? = null
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var encoder: MediaCodec? = null
@@ -229,6 +234,16 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 )
                 sendCurrentCameraStatus()
             }
+            ACTION_TOGGLE_MIC -> {
+                val currentMuted = audioStreamManager?.isMuted() ?: false
+                val newMuted = intent.getBooleanExtra(EXTRA_ENABLE_MIC, !currentMuted)
+                audioStreamManager?.setMuted(newMuted)
+                _statsFlow.value = _statsFlow.value.copy(
+                    isMicMuted = newMuted,
+                    isMicActive = audioStreamManager?.isRunning() == true
+                )
+                Log.d(TAG, "ACTION_TOGGLE_MIC: newMuted=$newMuted")
+            }
             ACTION_STOP -> {
                 stopCapture()
                 stopSelf()
@@ -292,12 +307,16 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
         val hasCameraPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
         val isFaceCamActive = cameraStreamManager?.isRunning() == true || SessionPreferences.isFaceCamEnabled(applicationContext)
+        val hasAudioPermission = ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             var serviceType = ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
                 if (hasCameraPermission && isFaceCamActive) {
                     serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
+                if (hasAudioPermission) {
+                    serviceType = serviceType or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
             }
             startForeground(NOTIFICATION_ID, notification, serviceType)
@@ -440,6 +459,19 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 cameraManager.start()
             }
 
+            // Start Microphone stream if RECORD_AUDIO is granted
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                val audioManager = com.example.HoneyMo.audio.AudioStreamManager(applicationContext) { packet ->
+                    wsClient?.sendFrame(packet, false)
+                    bytesCounter += packet.size
+                }
+                audioStreamManager = audioManager
+                audioManager.start()
+                Log.d(TAG, "AudioStreamManager started (44.1kHz AAC voice stream)")
+            } else {
+                Log.w(TAG, "Audio stream skipped: RECORD_AUDIO permission not granted")
+            }
+
             // Restore foreground notification to normal active state
             startForegroundWithNotification()
 
@@ -448,6 +480,8 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 isPausedForLock = false,
                 isFaceCamActive = cameraManager.isRunning(),
                 cameraFacing = initialFacing,
+                isMicActive = audioStreamManager?.isRunning() == true,
+                isMicMuted = audioStreamManager?.isMuted() == true,
                 errorMsg = null
             )
             sendCurrentCameraStatus()
@@ -581,7 +615,9 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                     framesSent = framesCounter,
                     bytesSent = bytesCounter,
                     currentFps = fpsCounter,
-                    isConnectedToServer = wsClient?.isConnected() == true
+                    isConnectedToServer = wsClient?.isConnected() == true,
+                    isMicActive = audioStreamManager?.isRunning() == true,
+                    isMicMuted = audioStreamManager?.isMuted() == true
                 )
                 fpsCounter = 0
             }
@@ -592,6 +628,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         Log.d(TAG, "WebSocket connected to backend")
         _statsFlow.value = _statsFlow.value.copy(isConnectedToServer = true)
         sendCurrentCameraStatus()
+        audioStreamManager?.resendConfig()
         // Request keyframe so server/viewers get an immediate sync frame
         requestImmediateKeyframe()
     }
@@ -603,6 +640,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
     override fun onKeyframeRequested() {
         requestImmediateKeyframe()
+        audioStreamManager?.resendConfig()
     }
 
     override fun onCameraSwitchRequested(targetFacing: String?) {
@@ -880,6 +918,9 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
 
         cameraStreamManager?.stop()
         cameraStreamManager = null
+
+        audioStreamManager?.stop()
+        audioStreamManager = null
 
         frameCompositor?.release()
         frameCompositor = null
