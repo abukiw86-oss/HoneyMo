@@ -128,6 +128,216 @@
       width: 100%;
     }
 
+    /* Streaming Devices Section */
+    .devices-section {
+      background-color: var(--bg-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 14px;
+      padding: 1rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.2);
+    }
+
+    .devices-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .devices-header-left {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .devices-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      letter-spacing: -0.01em;
+    }
+
+    .devices-count-pill {
+      font-size: 0.75rem;
+      padding: 0.2rem 0.65rem;
+      border-radius: 9999px;
+      font-weight: 600;
+      background-color: rgba(148, 163, 184, 0.15);
+      color: var(--text-secondary);
+      border: 1px solid rgba(148, 163, 184, 0.3);
+      transition: all 0.2s ease;
+    }
+
+    .devices-count-pill.active {
+      background-color: rgba(16, 185, 129, 0.15);
+      color: var(--accent-green);
+      border-color: rgba(16, 185, 129, 0.35);
+    }
+
+    .devices-hint {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+    }
+
+    .devices-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+      gap: 0.85rem;
+    }
+
+    .device-card {
+      background-color: var(--bg-tertiary);
+      border: 1.5px solid var(--border-color);
+      border-radius: 10px;
+      padding: 0.9rem 1rem;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 0.65rem;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      position: relative;
+      user-select: none;
+    }
+
+    .device-card:hover {
+      border-color: rgba(99, 102, 241, 0.6);
+      transform: translateY(-2px);
+      box-shadow: 0 6px 14px rgba(0, 0, 0, 0.35);
+    }
+
+    .device-card.active {
+      border-color: #3b82f6;
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.18) 0%, rgba(99, 102, 241, 0.1) 100%);
+      box-shadow: 0 0 0 1px #3b82f6, 0 8px 18px rgba(59, 130, 246, 0.25);
+    }
+
+    .device-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+
+    .device-card-name-group {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      min-width: 0;
+    }
+
+    .device-card-icon {
+      font-size: 1.3rem;
+      flex-shrink: 0;
+    }
+
+    .device-card-name {
+      font-size: 0.92rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .device-card-id {
+      font-size: 0.7rem;
+      color: var(--text-secondary);
+      font-family: monospace;
+    }
+
+    .device-status-badge {
+      font-size: 0.7rem;
+      font-weight: 600;
+      padding: 0.15rem 0.5rem;
+      border-radius: 9999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-shrink: 0;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--accent-green);
+      border: 1px solid rgba(16, 185, 129, 0.35);
+    }
+
+    .device-card.active .device-status-badge {
+      background: rgba(59, 130, 246, 0.22);
+      color: #60a5fa;
+      border-color: rgba(59, 130, 246, 0.5);
+    }
+
+    .device-card-details {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      font-size: 0.75rem;
+    }
+
+    .device-chip {
+      background-color: rgba(11, 15, 25, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      padding: 0.2rem 0.5rem;
+      color: var(--text-secondary);
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+    }
+
+    .device-chip strong {
+      color: var(--text-primary);
+      font-weight: 600;
+    }
+
+    .device-card-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-top: 0.45rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 0.75rem;
+    }
+
+    .device-card-action {
+      font-weight: 600;
+      font-size: 0.75rem;
+      padding: 0.25rem 0.65rem;
+      border-radius: 6px;
+      transition: all 0.15s ease;
+    }
+
+    .device-card.active .device-card-action {
+      color: #93c5fd;
+      background-color: rgba(59, 130, 246, 0.25);
+    }
+
+    .device-card:not(.active) .device-card-action {
+      color: var(--text-secondary);
+      background-color: rgba(255, 255, 255, 0.05);
+    }
+
+    .device-card:not(.active):hover .device-card-action {
+      color: #ffffff;
+      background-color: var(--accent-blue);
+    }
+
+    .no-devices-panel {
+      grid-column: 1 / -1;
+      text-align: center;
+      padding: 1.5rem 1rem;
+      color: var(--text-secondary);
+      font-size: 0.85rem;
+      border: 1px dashed var(--border-color);
+      border-radius: 10px;
+      background-color: rgba(11, 15, 25, 0.4);
+    }
+
     /* Metrics Grid */
     .metrics-grid {
       display: grid;
@@ -376,6 +586,31 @@
   </header>
 
   <main>
+    <!-- Streaming Devices Section -->
+    <div class="devices-section">
+      <div class="devices-header">
+        <div class="devices-header-left">
+          <div class="devices-title">
+            <span class="devices-icon">📡</span>
+            <span>Active Streaming Devices</span>
+          </div>
+          <span id="deviceCountBadge" class="devices-count-pill">0 Devices</span>
+        </div>
+        <div class="devices-hint" id="devicesHint">
+          Displaying first device by default • Click any device card to switch stream
+        </div>
+      </div>
+      <div id="deviceListContainer" class="devices-list">
+        <div class="no-devices-panel">
+          <div style="font-size: 1.5rem; margin-bottom: 0.35rem;">📱</div>
+          <strong>No Streaming Devices Connected</strong>
+          <p style="margin-top: 0.25rem; font-size: 0.8rem; color: var(--text-secondary);">
+            Open HoneyMo on an Android device and tap <strong>Start Capture</strong> to stream.
+          </p>
+        </div>
+      </div>
+    </div>
+
     <!-- Live Metrics Grid -->
     <div class="metrics-grid">
       <div class="metric-card">
@@ -704,6 +939,10 @@
       ws.onopen = () => {
         log('Connected to HoneyMo Relay Server', 'success');
         ws.send(JSON.stringify({ type: 'PING', time: Date.now() }));
+        if (selectedDeviceId) {
+          ws.send(JSON.stringify({ type: 'SUBSCRIBE', deviceId: selectedDeviceId }));
+          ws.send(JSON.stringify({ type: 'REQUEST_KEYFRAME', deviceId: selectedDeviceId }));
+        }
       };
 
       ws.onmessage = (event) => {
@@ -764,40 +1003,216 @@
           pingVal.style.color = rtt < 80 ? '#10B981' : (rtt < 180 ? '#F59E0B' : '#EF4444');
         }
       } else if (msg.type === 'DEVICE_LIST') {
-        const devices = msg.devices || [];
-        if (devices.length > 0) {
-          const dev = devices[0];
-          setDeviceStatus(true, {
-            width: dev.width,
-            height: dev.height,
-            fps: dev.fps,
-            deviceName: dev.name
-          });
-          if (dev.stats) {
-            updateStats({
-              fps: dev.stats.currentFps || dev.fps,
-              bitrateKbps: dev.stats.currentBitrateKbps || Math.round((dev.bitrate || 1000000) / 1000),
-              totalFrames: dev.stats.framesReceived || 0,
-              totalBytes: dev.stats.bytesReceived || 0
-            });
-          }
-        } else {
-          setDeviceStatus(false);
-        }
+        handleDeviceListUpdate(msg.devices || []);
       } else if (msg.type === 'INIT_STATUS' || msg.type === 'DEVICE_STATUS') {
         setDeviceStatus(msg.connected, msg.metadata);
       } else if (msg.type === 'DEVICE_INFO') {
         updateDeviceInfo(msg.metadata);
       } else if (msg.type === 'STATS') {
-        updateStats(msg.stats);
+        if (msg.deviceId) {
+          const dev = knownDevices.find(d => d.id === msg.deviceId);
+          if (dev) {
+            dev.stats = msg.stats;
+            updateDeviceCardStats(msg.deviceId, msg.stats);
+          }
+          if (msg.deviceId === selectedDeviceId) {
+            updateStats(msg.stats);
+          }
+        } else {
+          updateStats(msg.stats);
+        }
       }
+    }
+
+    // --------------------------------------------------------------------------
+    // Multi-Device Streaming Management
+    // --------------------------------------------------------------------------
+    let knownDevices = [];
+    let selectedDeviceId = null;
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function handleDeviceListUpdate(devices) {
+      knownDevices = devices || [];
+
+      if (knownDevices.length === 0) {
+        selectedDeviceId = null;
+        setDeviceStatus(false);
+        renderDeviceList();
+        return;
+      }
+
+      // If no device is currently selected, or selected device disconnected:
+      // By default, automatically select the FIRST device!
+      const previousSelected = selectedDeviceId;
+      if (!selectedDeviceId || !knownDevices.some(d => d.id === selectedDeviceId)) {
+        selectedDeviceId = knownDevices[0].id;
+        selectDevice(selectedDeviceId, previousSelected !== null);
+      } else {
+        // Update currently selected device metadata and re-render list
+        const currentDev = knownDevices.find(d => d.id === selectedDeviceId);
+        if (currentDev) {
+          setDeviceStatus(true, {
+            width: currentDev.width,
+            height: currentDev.height,
+            fps: currentDev.fps,
+            deviceName: currentDev.name
+          });
+          if (currentDev.stats) {
+            updateStats(currentDev.stats);
+          }
+        }
+        renderDeviceList();
+      }
+    }
+
+    function selectDevice(deviceId, shouldLog = true) {
+      if (!deviceId) return;
+      selectedDeviceId = deviceId;
+      const dev = knownDevices.find(d => d.id === deviceId);
+
+      // Notify relay server to switch subscription and request immediate keyframe
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'SUBSCRIBE',
+          deviceId: deviceId
+        }));
+        ws.send(JSON.stringify({
+          type: 'REQUEST_KEYFRAME',
+          deviceId: deviceId
+        }));
+      }
+
+      // Re-initialize JMuxer hardware decoder so that new device's SPS/PPS initializes cleanly
+      initJMuxer(dev?.fps || currentDeviceFps || 30);
+
+      // Reset Audio pipeline so any buffered audio packets from previous device are cleared
+      if (audioDecoder && audioDecoder.state !== 'closed') {
+        try { audioDecoder.close(); } catch (e) {}
+      }
+      audioDecoder = null;
+      cachedAudioConfig = null;
+      nextAudioPlayTime = 0;
+
+      // Update status and UI metrics
+      if (dev) {
+        setDeviceStatus(true, {
+          width: dev.width,
+          height: dev.height,
+          fps: dev.fps,
+          deviceName: dev.name
+        });
+        if (dev.stats) {
+          updateStats(dev.stats);
+        }
+      }
+
+      renderDeviceList();
+
+      if (shouldLog) {
+        log(`Viewing stream from: ${dev?.name || deviceId}`, 'info');
+      }
+    }
+
+    function updateDeviceCardStats(devId, stats) {
+      if (!stats) return;
+      const fpsEl = document.getElementById(`card-fps-${devId}`);
+      if (fpsEl && stats.fps !== undefined) {
+        fpsEl.innerHTML = `⏱️ <strong>${stats.fps} fps</strong>`;
+      }
+      const bitrateEl = document.getElementById(`card-bitrate-${devId}`);
+      if (bitrateEl && stats.bitrateKbps !== undefined) {
+        bitrateEl.innerHTML = `⚡ <strong>${stats.bitrateKbps} kbps</strong>`;
+      }
+    }
+
+    function renderDeviceList() {
+      const container = document.getElementById('deviceListContainer');
+      const countBadge = document.getElementById('deviceCountBadge');
+      if (!container) return;
+
+      if (!knownDevices || knownDevices.length === 0) {
+        if (countBadge) {
+          countBadge.textContent = '0 Devices';
+          countBadge.className = 'devices-count-pill';
+        }
+        container.innerHTML = `
+          <div class="no-devices-panel">
+            <div style="font-size: 1.5rem; margin-bottom: 0.35rem;">📱</div>
+            <strong>No Streaming Devices Connected</strong>
+            <p style="margin-top: 0.25rem; font-size: 0.8rem; color: var(--text-secondary);">
+              Open HoneyMo on an Android device and tap <strong>Start Capture</strong> to stream.
+            </p>
+          </div>
+        `;
+        return;
+      }
+
+      if (countBadge) {
+        countBadge.textContent = `${knownDevices.length} Device${knownDevices.length > 1 ? 's' : ''} Online`;
+        countBadge.className = 'devices-count-pill active';
+      }
+
+      container.innerHTML = knownDevices.map((dev, idx) => {
+        const isSelected = dev.id === selectedDeviceId;
+        const currentFps = dev.stats?.fps || dev.fps || 30;
+        const currentBitrate = dev.stats?.bitrateKbps || Math.round((dev.bitrate || 2000000) / 1000);
+        const name = dev.name || `Device #${idx + 1}`;
+        const shortId = dev.id ? (dev.id.length > 12 ? `${dev.id.substring(0, 10)}...` : dev.id) : `dev-${idx + 1}`;
+
+        return `
+          <div class="device-card ${isSelected ? 'active' : ''}" onclick="selectDevice('${dev.id}')" title="Click to view stream from ${escapeHtml(name)}">
+            <div class="device-card-header">
+              <div class="device-card-name-group">
+                <span class="device-card-icon">📱</span>
+                <div style="min-width: 0;">
+                  <div class="device-card-name">${escapeHtml(name)}</div>
+                  <div class="device-card-id">${escapeHtml(shortId)}</div>
+                </div>
+              </div>
+              <span class="device-status-badge">
+                <span class="status-dot"></span>
+                ${isSelected ? 'VIEWING' : 'ONLINE'}
+              </span>
+            </div>
+
+            <div class="device-card-details">
+              <span class="device-chip">📐 <strong>${dev.width || '--'}x${dev.height || '--'}</strong></span>
+              <span class="device-chip">🎯 <strong>${dev.fps || 30} fps</strong></span>
+              <span class="device-chip" id="card-bitrate-${dev.id}">⚡ <strong>${currentBitrate} kbps</strong></span>
+              <span class="device-chip" id="card-fps-${dev.id}">⏱️ <strong>${currentFps} fps</strong></span>
+              <span class="device-chip">🎙️ <strong>AAC Voice</strong></span>
+              ${dev.cameraAllowed ? `<span class="device-chip">📷 <strong>Cam ${dev.cameraFacing || 'front'}</strong></span>` : ''}
+            </div>
+
+            <div class="device-card-footer">
+              <span style="color: var(--text-secondary); font-size: 0.75rem;">
+                ${isSelected ? '● Currently displaying on player' : 'Click card to view this screen'}
+              </span>
+              <span class="device-card-action">
+                ${isSelected ? '✓ Viewing' : 'Switch Stream ↗'}
+              </span>
+            </div>
+          </div>
+        `;
+      }).join('');
     }
 
     function setDeviceStatus(connected, metadata) {
       if (connected) {
         deviceBadge.className = 'status-badge connected';
-        deviceStatusText.textContent = 'Device Streaming';
-        log('Android device is connected and active', 'success');
+        deviceStatusText.textContent = metadata?.deviceName ? `Streaming: ${metadata.deviceName}` : 'Device Streaming';
+        video.classList.add('active');
+        placeholder.style.display = 'none';
+        log('Android device stream active', 'success');
         if (metadata) updateDeviceInfo(metadata);
         updateAudioButtonUI();
       } else {
@@ -812,6 +1227,8 @@
           audioVal.style.color = 'var(--text-secondary)';
         }
         if (audioSub) audioSub.textContent = 'Voice Stream Idle';
+        resVal.textContent = '-- x --';
+        deviceModelVal.textContent = 'Waiting for device...';
         log('Device is offline or disconnected', 'warn');
       }
     }
@@ -843,7 +1260,10 @@
     // Controls
     btnKeyframe.onclick = () => {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'REQUEST_KEYFRAME' }));
+        ws.send(JSON.stringify({
+          type: 'REQUEST_KEYFRAME',
+          deviceId: selectedDeviceId
+        }));
         log('Requested immediate keyframe from Android MediaCodec', 'info');
       }
     };

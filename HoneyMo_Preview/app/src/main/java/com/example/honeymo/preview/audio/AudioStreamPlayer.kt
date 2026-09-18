@@ -124,12 +124,17 @@ class AudioStreamPlayer {
 
     fun isMuted(): Boolean = isMuted.get()
 
+    private var audioFramesReceived = 0L
+    fun getAudioFramesReceived(): Long = audioFramesReceived
+
     fun onAudioReceived(isConfig: Boolean, ptsUs: Long, chunk: ByteArray) {
         if (isConfig) {
             cachedCsd0 = chunk
             initDecoder(chunk)
             return
         }
+
+        audioFramesReceived++
 
         if (audioDecoder == null) {
             initDecoder(cachedCsd0)

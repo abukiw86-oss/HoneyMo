@@ -87,6 +87,14 @@ function isAudioPacket(buffer) {
     buffer[3] === 0x31;   // '1'
 }
 
+// Helper to determine the target device for a viewer (explicit subscription or first available)
+function getViewerTargetDeviceId(viewer) {
+  if (viewer.subscribedDeviceId && activeDevices.has(viewer.subscribedDeviceId)) {
+    return viewer.subscribedDeviceId;
+  }
+  return activeDevices.keys().next().value || null;
+}
+
 function getDeviceList() {
   const list = [];
   for (const [id, dev] of activeDevices.entries()) {
@@ -206,7 +214,8 @@ wssDevice.on('connection', (ws, req) => {
 
     wssViewer.clients.forEach((viewer) => {
       if (viewer.readyState === WebSocket.OPEN) {
-        if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+        const targetDevId = getViewerTargetDeviceId(viewer);
+        if (targetDevId === deviceId) {
           viewer.send(statsPayload);
         }
       }
@@ -224,7 +233,8 @@ wssDevice.on('connection', (ws, req) => {
         // Forward binary audio packet to viewers subscribed to this device
         wssViewer.clients.forEach((viewer) => {
           if (viewer.readyState === WebSocket.OPEN) {
-            if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+            const targetDevId = getViewerTargetDeviceId(viewer);
+            if (targetDevId === deviceId) {
               // Audio packet is tiny (~100-200B), avoid dropping unless congested > 512KB
               if (viewer.bufferedAmount < 512 * 1024) {
                 viewer.send(message, { binary: true });
@@ -249,7 +259,8 @@ wssDevice.on('connection', (ws, req) => {
       const isKeyOrConfig = isKeyFrameOrConfig(message);
       wssViewer.clients.forEach((viewer) => {
         if (viewer.readyState === WebSocket.OPEN) {
-          if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+          const targetDevId = getViewerTargetDeviceId(viewer);
+          if (targetDevId === deviceId) {
             // Drop P-frames if viewer socket buffer is congested (> 128 KB)
             if (!isKeyOrConfig && viewer.bufferedAmount > 128 * 1024) {
               return;
@@ -305,7 +316,8 @@ wssDevice.on('connection', (ws, req) => {
 
           wssViewer.clients.forEach((viewer) => {
             if (viewer.readyState === WebSocket.OPEN) {
-              if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+              const targetDevId = getViewerTargetDeviceId(viewer);
+              if (targetDevId === deviceId) {
                 viewer.send(camPayload);
               }
             }
@@ -342,7 +354,7 @@ wssViewer.on('connection', (ws, req) => {
   ws.subscribedDeviceId = targetDeviceId;
 
   const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  console.log(`[Viewer] Connected from ${clientIp}. Subscribed to: ${targetDeviceId || 'all/default'}`);
+  console.log(`[Viewer] Connected from ${clientIp}. Subscribed to: ${targetDeviceId || 'default (first device)'}`);
 
   // Send initial device list
   ws.send(JSON.stringify({
@@ -350,13 +362,11 @@ wssViewer.on('connection', (ws, req) => {
     devices: getDeviceList()
   }));
 
-  // If already subscribed to a device, send cached config and request fresh keyframe
-  if (targetDeviceId && activeDevices.has(targetDeviceId)) {
-    const dev = activeDevices.get(targetDeviceId);
+  // If already subscribed to a device, or default to the first active device, send cached config and request keyframe
+  const effectiveDevId = getViewerTargetDeviceId(ws);
+  if (effectiveDevId && activeDevices.has(effectiveDevId)) {
+    const dev = activeDevices.get(effectiveDevId);
     sendCachedConfigAndKeyframe(ws, dev);
-  } else if (!targetDeviceId && activeDevices.size === 1) {
-    const firstDev = activeDevices.values().next().value;
-    sendCachedConfigAndKeyframe(ws, firstDev);
   }
 
   ws.on('message', (message) => {
@@ -382,9 +392,12 @@ wssViewer.on('connection', (ws, req) => {
           sendCachedConfigAndKeyframe(ws, dev);
         }
       } else if (data.type === 'REQUEST_KEYFRAME') {
-        const devId = data.deviceId || ws.subscribedDeviceId;
+        const devId = data.deviceId || getViewerTargetDeviceId(ws);
         if (devId && activeDevices.has(devId)) {
           const dev = activeDevices.get(devId);
+          if (dev.cachedConfig && ws.readyState === WebSocket.OPEN) {
+            ws.send(dev.cachedConfig, { binary: true });
+          }
           if (dev.cachedAudioConfig && ws.readyState === WebSocket.OPEN) {
             ws.send(dev.cachedAudioConfig, { binary: true });
           }
@@ -394,7 +407,7 @@ wssViewer.on('connection', (ws, req) => {
           }
         }
       } else if (data.type === 'SWITCH_CAMERA') {
-        const devId = data.deviceId || ws.subscribedDeviceId;
+        const devId = data.deviceId || getViewerTargetDeviceId(ws);
         if (devId && activeDevices.has(devId)) {
           const dev = activeDevices.get(devId);
           if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {

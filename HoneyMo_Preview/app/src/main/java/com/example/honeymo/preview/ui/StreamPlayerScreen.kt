@@ -64,9 +64,11 @@ fun StreamPlayerScreen(
 ) {
     val context = LocalContext.current
     var liveFps by remember { mutableIntStateOf(0) }
+    var liveBitrateKbps by remember { mutableIntStateOf(device.bitrate / 1000) }
     var livePing by remember { mutableLongStateOf(-1L) }
     var framesCount by remember { mutableLongStateOf(0L) }
     var bytesCount by remember { mutableLongStateOf(0L) }
+    var audioPacketsCount by remember { mutableLongStateOf(0L) }
     var connectionState by remember { mutableStateOf("Connecting...") }
 
     var isCameraAllowed by remember { mutableStateOf(device.cameraAllowed) }
@@ -127,11 +129,19 @@ fun StreamPlayerScreen(
 
                 override fun onAudioReceived(isConfig: Boolean, ptsUs: Long, chunk: ByteArray) {
                     audioPlayer.onAudioReceived(isConfig, ptsUs, chunk)
+                    if (!isConfig) audioPacketsCount++
                     if (isConfig) {
                         streamRecorder.onAudioConfig(chunk)
                     } else {
                         streamRecorder.onAudioFrame(chunk, ptsUs)
                     }
+                }
+
+                override fun onStatsUpdated(fps: Int, bitrateKbps: Int, totalFrames: Long, totalBytes: Long) {
+                    if (fps > 0) liveFps = fps
+                    if (bitrateKbps > 0) liveBitrateKbps = bitrateKbps
+                    if (totalFrames > framesCount) framesCount = totalFrames
+                    if (totalBytes > bytesCount) bytesCount = totalBytes
                 }
 
                 override fun onConnected() {
@@ -601,12 +611,34 @@ fun StreamPlayerScreen(
                 title = "Framerate",
                 value = "$liveFps fps",
                 subtitle = "Target: ${device.fps} fps",
+                valueColor = Color(0xFFFACC15),
+                modifier = Modifier.weight(1f)
+            )
+            MetricCard(
+                title = "Bitrate",
+                value = if (liveBitrateKbps > 0) "$liveBitrateKbps kbps" else "${device.bitrate / 1000} kbps",
+                subtitle = "Hardware CBR H.264",
+                valueColor = Color(0xFF38BDF8),
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            MetricCard(
+                title = "Voice Audio",
+                value = if (isAudioMuted) "MUTED" else "ACTIVE",
+                subtitle = if (isAudioMuted) "Speaker silent" else "44.1kHz AAC (${audioPacketsCount})",
+                valueColor = if (isAudioMuted) Color(0xFFEF4444) else Color(0xFF10B981),
                 modifier = Modifier.weight(1f)
             )
             MetricCard(
                 title = "Latency / Ping",
                 value = if (livePing >= 0) "$livePing ms" else "-- ms",
                 subtitle = "WebSocket RTT",
+                valueColor = if (livePing in 0..80) Color(0xFF10B981) else if (livePing in 81..200) Color(0xFFF59E0B) else Color(0xFFEF4444),
                 modifier = Modifier.weight(1f)
             )
         }
@@ -619,12 +651,13 @@ fun StreamPlayerScreen(
                 title = "Transferred",
                 value = "%.1f MB".format(bytesCount / (1024f * 1024f)),
                 subtitle = "$framesCount frames",
+                valueColor = Color(0xFFA78BFA),
                 modifier = Modifier.weight(1f)
             )
             MetricCard(
                 title = "Resolution",
                 value = "${device.width} x ${device.height}",
-                subtitle = "Aspect 540p",
+                subtitle = "Viewport",
                 modifier = Modifier.weight(1f)
             )
         }
@@ -746,7 +779,7 @@ fun StreamPlayerScreen(
                         contentPadding = PaddingValues(vertical = 10.dp)
                     ) {
                         Text(
-                            text = if (isRecording) "⏹️ Stop Record" else "🔴 Record Video",
+                            text = if (isRecording) "⏹️ Stop (${recordingSeconds}s)" else "🔴 Record (Video + Voice)",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
@@ -765,17 +798,17 @@ fun StreamPlayerScreen(
                             isAudioMuted = newMuted
                             audioPlayer.setMuted(newMuted)
                             addLog(if (newMuted) "Audio muted" else "Audio unmuted", "info")
-                            Toast.makeText(context, if (newMuted) "🔇 Audio Muted" else "🔊 Audio Playing", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, if (newMuted) "🔇 Audio Muted" else "🔊 Voice Audio Playing", Toast.LENGTH_SHORT).show()
                         },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isAudioMuted) Color(0xFFEF4444) else Color(0xFF0284C7)
+                            containerColor = if (isAudioMuted) Color(0xFFEF4444) else Color(0xFF10B981)
                         ),
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.fillMaxWidth(),
                         contentPadding = PaddingValues(vertical = 10.dp)
                     ) {
                         Text(
-                            text = if (isAudioMuted) "🔇 Unmute Voice (Speaker Muted)" else "🔊 Mute Voice (Speaker Live)",
+                            text = if (isAudioMuted) "🔇 Voice Audio Muted (Tap to Unmute)" else "🔊 Voice Audio Live (Tap to Mute)",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
@@ -968,7 +1001,8 @@ fun MetricCard(
     title: String,
     value: String,
     subtitle: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    valueColor: Color = Color.White
 ) {
     Card(
         colors = CardDefaults.cardColors(containerColor = Color(0xFF1E293B)),
@@ -990,7 +1024,7 @@ fun MetricCard(
                 text = value,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color.White
+                color = valueColor
             )
             Text(
                 text = subtitle,

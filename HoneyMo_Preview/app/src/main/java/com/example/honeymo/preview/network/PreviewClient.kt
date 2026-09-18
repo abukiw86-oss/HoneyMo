@@ -24,6 +24,7 @@ class PreviewClient(
         open fun onError(error: String) {}
         open fun onPingUpdated(pingMs: Long) {}
         open fun onCameraStatusUpdated(cameraAllowed: Boolean, cameraFacing: String, cameraActive: Boolean) {}
+        open fun onStatsUpdated(fps: Int, bitrateKbps: Int, totalFrames: Long, totalBytes: Long) {}
     }
 
     companion object {
@@ -123,6 +124,17 @@ class PreviewClient(
                         val active = json.optBoolean("cameraActive", false)
                         Log.d(TAG, "Received CAMERA_STATUS: allowed=$allowed, facing=$facing, active=$active")
                         withContextUi { listener.onCameraStatusUpdated(allowed, facing, active) }
+                    } else if (type == "STATS") {
+                        val stats = json.optJSONObject("stats")
+                        if (stats != null) {
+                            val fps = stats.optInt("fps", 0)
+                            val bitrateKbps = stats.optInt("bitrateKbps", 0)
+                            val totalFrames = stats.optLong("totalFrames", 0L)
+                            val totalBytes = stats.optLong("totalBytes", 0L)
+                            withContextUi {
+                                listener.onStatsUpdated(fps, bitrateKbps, totalFrames, totalBytes)
+                            }
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error parsing JSON message: ${e.message}")
@@ -233,13 +245,17 @@ class PreviewClient(
     }
 
     private fun parseDeviceInfo(obj: JSONObject): DeviceInfo {
+        val statsObj = obj.optJSONObject("stats")
+        val currentFps = statsObj?.optInt("fps", 0) ?: 0
+        val currentBitrate = statsObj?.optInt("bitrateKbps", 0) ?: 0
+
         return DeviceInfo(
             id = obj.optString("id"),
             name = obj.optString("name", "Unknown Device"),
             width = obj.optInt("width", 720),
             height = obj.optInt("height", 1280),
-            fps = obj.optInt("fps", 30),
-            bitrate = obj.optInt("bitrate", 2000000),
+            fps = if (currentFps > 0) currentFps else obj.optInt("fps", 30),
+            bitrate = if (currentBitrate > 0) currentBitrate * 1000 else obj.optInt("bitrate", 2000000),
             connectedAt = obj.optString("connectedAt", ""),
             cameraAllowed = obj.optBoolean("cameraAllowed", false),
             cameraFacing = obj.optString("cameraFacing", "front"),
