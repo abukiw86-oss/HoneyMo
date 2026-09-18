@@ -78,6 +78,15 @@ function isKeyFrameOrConfig(buffer) {
   return false;
 }
 
+// Helper to inspect HoneyMo Audio (HMA1) packets
+function isAudioPacket(buffer) {
+  return buffer.length >= 17 &&
+    buffer[0] === 0x48 && // 'H'
+    buffer[1] === 0x4D && // 'M'
+    buffer[2] === 0x41 && // 'A'
+    buffer[3] === 0x31;   // '1'
+}
+
 function getDeviceList() {
   const list = [];
   for (const [id, dev] of activeDevices.entries()) {
@@ -163,6 +172,7 @@ wssDevice.on('connection', (ws, req) => {
     cameraActive: false,
     connectedAt: new Date().toISOString(),
     cachedConfig: null,
+    cachedAudioConfig: null,
     stats: {
       framesReceived: 0,
       bytesReceived: 0,
@@ -205,6 +215,26 @@ wssDevice.on('connection', (ws, req) => {
 
   ws.on('message', (message, isBinary) => {
     if (isBinary) {
+      // Check if this is a HoneyMo Audio (HMA1) packet
+      if (isAudioPacket(message)) {
+        const isAudioConfig = message.length >= 5 && message[4] === 0;
+        if (isAudioConfig) {
+          deviceRecord.cachedAudioConfig = Buffer.from(message);
+        }
+        // Forward binary audio packet to viewers subscribed to this device
+        wssViewer.clients.forEach((viewer) => {
+          if (viewer.readyState === WebSocket.OPEN) {
+            if (viewer.subscribedDeviceId === deviceId || (!viewer.subscribedDeviceId && activeDevices.size === 1)) {
+              // Audio packet is tiny (~100-200B), avoid dropping unless congested > 512KB
+              if (viewer.bufferedAmount < 512 * 1024) {
+                viewer.send(message, { binary: true });
+              }
+            }
+          }
+        });
+        return;
+      }
+
       deviceRecord.stats.framesReceived++;
       deviceRecord.stats.bytesReceived += message.length;
       deviceRecord._secondFrames++;
@@ -355,6 +385,9 @@ wssViewer.on('connection', (ws, req) => {
         const devId = data.deviceId || ws.subscribedDeviceId;
         if (devId && activeDevices.has(devId)) {
           const dev = activeDevices.get(devId);
+          if (dev.cachedAudioConfig && ws.readyState === WebSocket.OPEN) {
+            ws.send(dev.cachedAudioConfig, { binary: true });
+          }
           if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
             dev.ws.send(JSON.stringify({ type: 'REQUEST_KEYFRAME' }));
             console.log(`[Viewer] Requested keyframe from device ${devId}`);
@@ -398,6 +431,9 @@ function sendCachedConfigAndKeyframe(viewerWs, dev) {
   }
   if (dev.cachedConfig && viewerWs.readyState === WebSocket.OPEN) {
     viewerWs.send(dev.cachedConfig, { binary: true });
+  }
+  if (dev.cachedAudioConfig && viewerWs.readyState === WebSocket.OPEN) {
+    viewerWs.send(dev.cachedAudioConfig, { binary: true });
   }
   if (dev.ws && dev.ws.readyState === WebSocket.OPEN) {
     try {

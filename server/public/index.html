@@ -292,6 +292,28 @@
       border-color: var(--accent-red);
     }
 
+    button.btn-audio-active {
+      background-color: rgba(16, 185, 129, 0.15);
+      border-color: rgba(16, 185, 129, 0.4);
+      color: #34d399;
+    }
+
+    button.btn-audio-active:hover:not(:disabled) {
+      background-color: rgba(16, 185, 129, 0.28);
+      border-color: rgba(16, 185, 129, 0.6);
+    }
+
+    button.btn-audio-muted {
+      background-color: rgba(239, 68, 68, 0.15);
+      border-color: rgba(239, 68, 68, 0.4);
+      color: #f87171;
+    }
+
+    button.btn-audio-muted:hover:not(:disabled) {
+      background-color: rgba(239, 68, 68, 0.28);
+      border-color: rgba(239, 68, 68, 0.6);
+    }
+
     /* Logs section */
     .logs-card {
       background-color: var(--bg-secondary);
@@ -385,6 +407,12 @@
         <span id="pingVal" class="metric-value">-- <small style="font-size: 0.85rem; font-weight: normal;">ms</small></span>
         <span id="pingSub" class="metric-sub">RTT to Relay</span>
       </div>
+
+      <div class="metric-card">
+        <span class="metric-title">Voice Audio</span>
+        <span id="audioVal" class="metric-value" style="color: var(--accent-green);">ON <small style="font-size: 0.85rem; font-weight: normal;">(44.1kHz)</small></span>
+        <span id="audioSub" class="metric-sub">AAC-LC Voice Active</span>
+      </div>
     </div>
 
     <!-- Video Player Display -->
@@ -410,8 +438,11 @@
           <button id="btnSnapshot" title="Download snapshot image">
             📸 Take Screenshot
           </button>
-          <button id="btnRecord" title="Record live stream">
+          <button id="btnRecord" title="Record live stream with audio">
             🔴 Record Stream
+          </button>
+          <button id="btnAudioToggle" class="btn-audio-active" title="Toggle Voice Audio (Mute / Unmute)">
+            🔊 <span id="audioToggleText">Audio: ON</span>
           </button>
         </div>
 
@@ -450,8 +481,11 @@
     const btnKeyframe = document.getElementById('btnKeyframe');
     const btnSnapshot = document.getElementById('btnSnapshot');
     const btnRecord = document.getElementById('btnRecord');
+    const btnAudioToggle = document.getElementById('btnAudioToggle');
     const btnFullscreen = document.getElementById('btnFullscreen');
     const btnClearLogs = document.getElementById('btnClearLogs');
+    const audioVal = document.getElementById('audioVal');
+    const audioSub = document.getElementById('audioSub');
 
     // Update connection URL suggestion box
     const currentHost = window.location.hostname;
@@ -468,6 +502,149 @@
     }
 
     btnClearLogs.onclick = () => { logContainer.innerHTML = ''; };
+
+    // --------------------------------------------------------------------------
+    // Low-Latency Web Audio & WebCodecs Voice Pipeline
+    // --------------------------------------------------------------------------
+    let audioContext = null;
+    let audioGainNode = null;
+    let audioDestNode = null; // MediaStreamDestination for combined recording
+    let audioDecoder = null;
+    let cachedAudioConfig = null;
+    let isAudioMuted = false; // Voice stream is unmuted/on by default
+    let nextAudioPlayTime = 0;
+    let audioPacketsReceived = 0;
+
+    function ensureAudioContext() {
+      if (!audioContext) {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+          audioContext = new AudioContextClass({ latencyHint: 'interactive', sampleRate: 44100 });
+          audioGainNode = audioContext.createGain();
+          audioGainNode.gain.value = isAudioMuted ? 0.0 : 1.0;
+          audioGainNode.connect(audioContext.destination);
+
+          if (audioContext.createMediaStreamDestination) {
+            audioDestNode = audioContext.createMediaStreamDestination();
+            audioGainNode.connect(audioDestNode);
+          }
+          log('Web AudioContext initialized (44.1kHz)', 'info');
+        }
+      }
+      if (audioContext && audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {});
+      }
+      return audioContext;
+    }
+
+    // Auto-resume AudioContext on first user interaction anywhere
+    document.addEventListener('click', () => {
+      ensureAudioContext();
+    }, { once: false });
+
+    function setupAudioDecoder(csd0) {
+      if (!window.AudioDecoder) {
+        log('WebCodecs AudioDecoder not supported in this browser (Chrome, Edge, Safari 15.4+, Firefox 130+ supported)', 'warn');
+        return;
+      }
+      try {
+        if (audioDecoder && audioDecoder.state !== 'closed') {
+          audioDecoder.close();
+        }
+      } catch (e) {}
+
+      try {
+        audioDecoder = new AudioDecoder({
+          output: (audioData) => {
+            handleDecodedAudio(audioData);
+          },
+          error: (err) => {
+            console.warn('AudioDecoder decode error:', err);
+          }
+        });
+
+        const desc = (csd0 && csd0.length >= 2) ? csd0 : new Uint8Array([0x12, 0x08]); // 44.1kHz mono AAC-LC
+        audioDecoder.configure({
+          codec: 'mp4a.40.2',
+          sampleRate: 44100,
+          numberOfChannels: 1,
+          description: desc
+        });
+        log('AudioDecoder configured for 44.1kHz AAC voice', 'info');
+      } catch (err) {
+        console.error('Failed to configure AudioDecoder:', err);
+      }
+    }
+
+    function handleDecodedAudio(audioData) {
+      const ctx = ensureAudioContext();
+      if (!ctx) {
+        audioData.close();
+        return;
+      }
+
+      const numChannels = audioData.numberOfChannels;
+      const numFrames = audioData.numberOfFrames;
+      const sampleRate = audioData.sampleRate;
+
+      const audioBuffer = ctx.createBuffer(numChannels, numFrames, sampleRate);
+      for (let ch = 0; ch < numChannels; ch++) {
+        const channelData = new Float32Array(numFrames);
+        audioData.copyTo(channelData, { planeIndex: ch, format: 'f32-planar' });
+        audioBuffer.copyToChannel(channelData, ch);
+      }
+      audioData.close();
+
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(audioGainNode);
+
+      const now = ctx.currentTime;
+      // Ultra-low latency scheduling with jitter protection:
+      // If playhead fell behind or drifted too far, reset with 15ms lead buffer
+      if (nextAudioPlayTime < now || nextAudioPlayTime > now + 0.35) {
+        nextAudioPlayTime = now + 0.015;
+      }
+
+      source.start(nextAudioPlayTime);
+      nextAudioPlayTime += audioBuffer.duration;
+    }
+
+    function handleAudioPacket(uint8) {
+      if (uint8.length < 17) return;
+      audioPacketsReceived++;
+      const type = uint8[4]; // 0 = CONFIG, 1 = DATA
+      const view = new DataView(uint8.buffer, uint8.byteOffset, uint8.byteLength);
+      const ptsHigh = view.getUint32(5);
+      const ptsLow = view.getUint32(9);
+      const ptsUs = ptsHigh * 4294967296 + ptsLow;
+      const payloadLen = view.getUint32(13);
+      const end = Math.min(uint8.length, 17 + payloadLen);
+      if (end < 17) return;
+      const payload = uint8.subarray(17, end);
+
+      if (type === 0) {
+        // CSD-0 config frame
+        cachedAudioConfig = payload;
+        setupAudioDecoder(payload);
+      } else if (type === 1) {
+        // Raw AAC frame
+        if (!audioDecoder || audioDecoder.state === 'closed') {
+          setupAudioDecoder(cachedAudioConfig);
+        }
+        if (audioDecoder && audioDecoder.state === 'configured') {
+          try {
+            audioDecoder.decode(new EncodedAudioChunk({
+              type: 'key',
+              timestamp: ptsUs,
+              data: payload
+            }));
+          } catch (e) {
+            console.warn('AudioDecoder feed error:', e);
+          }
+        }
+      }
+    }
 
     // Initialize JMuxer player
     let jmuxer = null;
@@ -538,9 +715,20 @@
             console.error('Error parsing JSON message:', e);
           }
         } else if (event.data instanceof ArrayBuffer) {
-          // Received raw H.264 NAL unit
           const uint8 = new Uint8Array(event.data);
-          
+
+          // Check if this is a HoneyMo Audio (HMA1) packet
+          if (uint8.length >= 17 &&
+              uint8[0] === 0x48 && // 'H'
+              uint8[1] === 0x4D && // 'M'
+              uint8[2] === 0x41 && // 'A'
+              uint8[3] === 0x31    // '1'
+          ) {
+            handleAudioPacket(uint8);
+            return;
+          }
+
+          // Received raw H.264 NAL unit for video
           if (!video.classList.contains('active')) {
             video.classList.add('active');
             placeholder.style.display = 'none';
@@ -611,6 +799,7 @@
         deviceStatusText.textContent = 'Device Streaming';
         log('Android device is connected and active', 'success');
         if (metadata) updateDeviceInfo(metadata);
+        updateAudioButtonUI();
       } else {
         deviceBadge.className = 'status-badge';
         deviceStatusText.textContent = 'Device Offline';
@@ -618,6 +807,11 @@
         placeholder.style.display = 'flex';
         fpsVal.innerHTML = '0 <small style="font-size: 0.85rem; font-weight: normal;">fps</small>';
         bitrateVal.innerHTML = '0 <small style="font-size: 0.85rem; font-weight: normal;">kbps</small>';
+        if (audioVal) {
+          audioVal.innerHTML = 'Offline <small style="font-size: 0.85rem; font-weight: normal;">(--)</small>';
+          audioVal.style.color = 'var(--text-secondary)';
+        }
+        if (audioSub) audioSub.textContent = 'Voice Stream Idle';
         log('Device is offline or disconnected', 'warn');
       }
     }
@@ -681,31 +875,95 @@
       log('Saved screenshot image', 'success');
     };
 
-    // Recording feature using MediaStream capture
+    // Voice Audio Mute/Unmute toggle button handler
+    function updateAudioButtonUI() {
+      if (!btnAudioToggle) return;
+      if (isAudioMuted) {
+        btnAudioToggle.className = 'btn-audio-muted';
+        btnAudioToggle.innerHTML = '🔇 <span id="audioToggleText">Audio: MUTED</span>';
+        if (audioVal) {
+          audioVal.innerHTML = 'MUTED <small style="font-size: 0.85rem; font-weight: normal;">(silent)</small>';
+          audioVal.style.color = 'var(--accent-red)';
+        }
+        if (audioSub) {
+          audioSub.textContent = 'Voice Audio Muted';
+        }
+      } else {
+        btnAudioToggle.className = 'btn-audio-active';
+        btnAudioToggle.innerHTML = '🔊 <span id="audioToggleText">Audio: ON</span>';
+        if (audioVal) {
+          audioVal.innerHTML = 'ON <small style="font-size: 0.85rem; font-weight: normal;">(44.1kHz)</small>';
+          audioVal.style.color = 'var(--accent-green)';
+        }
+        if (audioSub) {
+          audioSub.textContent = 'AAC-LC Voice Active';
+        }
+      }
+    }
+
+    if (btnAudioToggle) {
+      btnAudioToggle.onclick = () => {
+        ensureAudioContext();
+        isAudioMuted = !isAudioMuted;
+        if (audioGainNode) {
+          audioGainNode.gain.value = isAudioMuted ? 0.0 : 1.0;
+        }
+        updateAudioButtonUI();
+        log(`Web player voice audio ${isAudioMuted ? 'MUTED' : 'UNMUTED'}`, 'info');
+      };
+    }
+
+    // Recording feature using MediaStream capture (video + voice audio)
     let mediaRecorder = null;
     let recordedChunks = [];
 
     btnRecord.onclick = () => {
       if (!mediaRecorder || mediaRecorder.state === 'inactive') {
-        if (!video || !video.srcObject && !video.captureStream) {
+        if (!video || (!video.srcObject && !video.captureStream && !video.mozCaptureStream)) {
           alert('Video capture stream not available yet');
           return;
         }
         try {
-          const stream = video.captureStream();
+          const videoStream = video.captureStream ? video.captureStream() : (video.mozCaptureStream ? video.mozCaptureStream() : null);
+          if (!videoStream) {
+            alert('Video capture stream not supported');
+            return;
+          }
+
+          let recordStream = videoStream;
+          ensureAudioContext();
+          if (audioDestNode && audioDestNode.stream && audioDestNode.stream.getAudioTracks().length > 0) {
+            const mixed = new MediaStream();
+            videoStream.getVideoTracks().forEach(t => mixed.addTrack(t));
+            audioDestNode.stream.getAudioTracks().forEach(t => mixed.addTrack(t));
+            recordStream = mixed;
+            log('Recording stream with both Video and Voice Audio', 'info');
+          } else {
+            log('Recording video stream', 'info');
+          }
+
           recordedChunks = [];
-          mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8,opus' });
+          const preferredMimes = ['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4'];
+          let mime = '';
+          for (const m of preferredMimes) {
+            if (MediaRecorder.isTypeSupported(m)) {
+              mime = m;
+              break;
+            }
+          }
+
+          mediaRecorder = mime ? new MediaRecorder(recordStream, { mimeType: mime }) : new MediaRecorder(recordStream);
           mediaRecorder.ondataavailable = (e) => {
             if (e.data.size > 0) recordedChunks.push(e.data);
           };
           mediaRecorder.onstop = () => {
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
+            const blob = new Blob(recordedChunks, { type: mime || 'video/webm' });
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = `screen-record-${Date.now()}.webm`;
+            a.download = `honeymo-stream-record-${Date.now()}.webm`;
             a.click();
-            log('Recording downloaded', 'success');
+            log('Recording saved and downloaded', 'success');
           };
           mediaRecorder.start(1000);
           btnRecord.textContent = '⏹ Stop Recording';
