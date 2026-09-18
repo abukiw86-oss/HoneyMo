@@ -94,6 +94,8 @@ fun StreamPlayerScreen(
     }
 
     val streamRecorder = remember { StreamRecorder() }
+    val audioPlayer = remember { com.example.honeymo.preview.audio.AudioStreamPlayer() }
+    var isAudioMuted by remember { mutableStateOf(false) }
 
     val decoder = remember {
         H264Decoder(
@@ -121,6 +123,15 @@ fun StreamPlayerScreen(
                     framesCount++
                     decoder.feedFrame(chunk)
                     streamRecorder.onVideoFrame(chunk)
+                }
+
+                override fun onAudioReceived(isConfig: Boolean, ptsUs: Long, chunk: ByteArray) {
+                    audioPlayer.onAudioReceived(isConfig, ptsUs, chunk)
+                    if (isConfig) {
+                        streamRecorder.onAudioConfig(chunk)
+                    } else {
+                        streamRecorder.onAudioFrame(chunk, ptsUs)
+                    }
                 }
 
                 override fun onConnected() {
@@ -248,6 +259,7 @@ fun StreamPlayerScreen(
             }
             previewClient.disconnect()
             decoder.release()
+            audioPlayer.release()
         }
     }
 
@@ -451,6 +463,22 @@ fun StreamPlayerScreen(
                             shape = RoundedCornerShape(10.dp)
                         ) {
                             Text("📸 Shot", color = Color.White, fontSize = 12.sp)
+                        }
+
+                        // Audio Mute / Unmute in Fullscreen
+                        Button(
+                            onClick = {
+                                val newMuted = !isAudioMuted
+                                isAudioMuted = newMuted
+                                audioPlayer.setMuted(newMuted)
+                                Toast.makeText(context, if (newMuted) "🔇 Audio Muted" else "🔊 Audio Playing", Toast.LENGTH_SHORT).show()
+                            },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (isAudioMuted) Color(0xCCEF4444) else Color(0xCC0284C7)
+                            ),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text(if (isAudioMuted) "🔇" else "🔊", fontSize = 14.sp)
                         }
 
                         // Remote Camera Flip Button (Enabled only if streamer camera permission granted)
@@ -719,6 +747,35 @@ fun StreamPlayerScreen(
                     ) {
                         Text(
                             text = if (isRecording) "⏹️ Stop Record" else "🔴 Record Video",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.White
+                        )
+                    }
+                }
+
+                // Controls Row 3: Voice Audio Mute / Unmute
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            val newMuted = !isAudioMuted
+                            isAudioMuted = newMuted
+                            audioPlayer.setMuted(newMuted)
+                            addLog(if (newMuted) "Audio muted" else "Audio unmuted", "info")
+                            Toast.makeText(context, if (newMuted) "🔇 Audio Muted" else "🔊 Audio Playing", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isAudioMuted) Color(0xFFEF4444) else Color(0xFF0284C7)
+                        ),
+                        shape = RoundedCornerShape(8.dp),
+                        modifier = Modifier.fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = if (isAudioMuted) "🔇 Unmute Voice (Speaker Muted)" else "🔊 Mute Voice (Speaker Live)",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color.White

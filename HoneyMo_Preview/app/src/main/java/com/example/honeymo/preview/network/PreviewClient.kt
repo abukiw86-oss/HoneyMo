@@ -18,6 +18,7 @@ class PreviewClient(
     open class PreviewListener {
         open fun onDeviceListUpdated(devices: List<DeviceInfo>) {}
         open fun onFrameReceived(chunk: ByteArray) {}
+        open fun onAudioReceived(isConfig: Boolean, ptsUs: Long, chunk: ByteArray) {}
         open fun onConnected() {}
         open fun onDisconnected(reason: String) {}
         open fun onError(error: String) {}
@@ -129,8 +130,26 @@ class PreviewClient(
             }
 
             override fun onMessage(ws: WebSocket, bytes: ByteString) {
-                // Binary H.264 frame received
-                listener.onFrameReceived(bytes.toByteArray())
+                val byteArray = bytes.toByteArray()
+                // Check if this is an audio packet (HMA1 header: [0x48, 0x4D, 0x41, 0x31])
+                if (byteArray.size >= 17 &&
+                    byteArray[0] == 'H'.code.toByte() &&
+                    byteArray[1] == 'M'.code.toByte() &&
+                    byteArray[2] == 'A'.code.toByte() &&
+                    byteArray[3] == '1'.code.toByte()
+                ) {
+                    val type = byteArray[4].toInt()
+                    val ptsUs = java.nio.ByteBuffer.wrap(byteArray, 5, 8).long
+                    val payloadLen = java.nio.ByteBuffer.wrap(byteArray, 13, 4).int
+                    val end = minOf(byteArray.size, 17 + payloadLen)
+                    if (end >= 17) {
+                        val payload = byteArray.copyOfRange(17, end)
+                        listener.onAudioReceived(type == 0, ptsUs, payload)
+                    }
+                } else {
+                    // Binary H.264 video frame received
+                    listener.onFrameReceived(byteArray)
+                }
             }
 
             override fun onClosing(ws: WebSocket, code: Int, reason: String) {
