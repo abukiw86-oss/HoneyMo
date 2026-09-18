@@ -318,10 +318,12 @@ fun ScreenCaptureApp(
         }
     }
 
-    // Permissions launcher for Notifications
+    // Permissions launcher for Notifications & Microphone
     val permissionsLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
+    ) { grants ->
+        val audioGranted = grants[Manifest.permission.RECORD_AUDIO] ?: (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
+        hasAudioPermission = audioGranted
         val mpManager = context.getSystemService(Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
         captureLauncher.launch(mpManager.createScreenCaptureIntent())
     }
@@ -333,8 +335,8 @@ fun ScreenCaptureApp(
                 permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
-        if (!hasAudioPermission) {
-            audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionsToRequest.add(Manifest.permission.RECORD_AUDIO)
         }
 
         if (permissionsToRequest.isNotEmpty()) {

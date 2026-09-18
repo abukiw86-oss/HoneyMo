@@ -235,14 +235,24 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                 sendCurrentCameraStatus()
             }
             ACTION_TOGGLE_MIC -> {
+                if (audioStreamManager == null && ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                    val audioManager = com.example.HoneyMo.audio.AudioStreamManager(applicationContext) { packet ->
+                        wsClient?.sendFrame(packet, false)
+                        bytesCounter += packet.size
+                    }
+                    audioStreamManager = audioManager
+                    audioManager.setMuted(false)
+                    audioManager.start()
+                    Log.d(TAG, "AudioStreamManager lazily started on ACTION_TOGGLE_MIC")
+                }
                 val currentMuted = audioStreamManager?.isMuted() ?: false
                 val newMuted = intent.getBooleanExtra(EXTRA_ENABLE_MIC, !currentMuted)
                 audioStreamManager?.setMuted(newMuted)
                 _statsFlow.value = _statsFlow.value.copy(
-                    isMicMuted = newMuted,
+                    isMicMuted = audioStreamManager?.isMuted() ?: false,
                     isMicActive = audioStreamManager?.isRunning() == true
                 )
-                Log.d(TAG, "ACTION_TOGGLE_MIC: newMuted=$newMuted")
+                Log.d(TAG, "ACTION_TOGGLE_MIC: newMuted=$newMuted, isRunning=${audioStreamManager?.isRunning()}")
             }
             ACTION_STOP -> {
                 stopCapture()
@@ -466,8 +476,9 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                     bytesCounter += packet.size
                 }
                 audioStreamManager = audioManager
+                audioManager.setMuted(false)
                 audioManager.start()
-                Log.d(TAG, "AudioStreamManager started (44.1kHz AAC voice stream)")
+                Log.d(TAG, "AudioStreamManager started (44.1kHz AAC voice stream, unmuted by default)")
             } else {
                 Log.w(TAG, "Audio stream skipped: RECORD_AUDIO permission not granted")
             }
