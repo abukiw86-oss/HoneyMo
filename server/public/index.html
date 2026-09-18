@@ -524,6 +524,18 @@
       border-color: rgba(239, 68, 68, 0.6);
     }
 
+    button.btn-camera {
+      background-color: rgba(99, 102, 241, 0.15);
+      border-color: rgba(99, 102, 241, 0.4);
+      color: #a5b4fc;
+    }
+
+    button.btn-camera:hover:not(:disabled) {
+      background-color: rgba(99, 102, 241, 0.28);
+      border-color: rgba(99, 102, 241, 0.6);
+      color: #e0e7ff;
+    }
+
     /* Logs section */
     .logs-card {
       background-color: var(--bg-secondary);
@@ -679,6 +691,9 @@
           <button id="btnAudioToggle" class="btn-audio-active" title="Toggle Voice Audio (Mute / Unmute)">
             🔊 <span id="audioToggleText">Audio: ON</span>
           </button>
+          <button id="btnSwitchCamera" class="btn-camera" title="Switch between Front and Back camera on streamer device">
+            📷 <span id="cameraSwitchText">Cam: Front ⇄ Back</span>
+          </button>
         </div>
 
         <div class="btn-group">
@@ -717,6 +732,8 @@
     const btnSnapshot = document.getElementById('btnSnapshot');
     const btnRecord = document.getElementById('btnRecord');
     const btnAudioToggle = document.getElementById('btnAudioToggle');
+    const btnSwitchCamera = document.getElementById('btnSwitchCamera');
+    const cameraSwitchText = document.getElementById('cameraSwitchText');
     const btnFullscreen = document.getElementById('btnFullscreen');
     const btnClearLogs = document.getElementById('btnClearLogs');
     const audioVal = document.getElementById('audioVal');
@@ -1021,7 +1038,25 @@
         } else {
           updateStats(msg.stats);
         }
+      } else if (msg.type === 'CAMERA_STATUS') {
+        handleCameraStatus(msg);
       }
+    }
+
+    function handleCameraStatus(msg) {
+      if (!msg) return;
+      const targetId = msg.deviceId || selectedDeviceId;
+      const dev = knownDevices.find(d => d.id === targetId);
+      if (dev) {
+        if (msg.cameraAllowed !== undefined) dev.cameraAllowed = Boolean(msg.cameraAllowed);
+        if (msg.cameraFacing !== undefined) dev.cameraFacing = msg.cameraFacing;
+        if (msg.cameraActive !== undefined) dev.cameraActive = Boolean(msg.cameraActive);
+      }
+      if (!msg.deviceId || msg.deviceId === selectedDeviceId) {
+        updateCameraButtonUI();
+      }
+      renderDeviceList();
+      log(`Streamer camera updated: facing ${msg.cameraFacing || 'front'} (active: ${msg.cameraActive !== false})`, 'info');
     }
 
     // --------------------------------------------------------------------------
@@ -1071,6 +1106,7 @@
           }
         }
         renderDeviceList();
+        updateCameraButtonUI();
       }
     }
 
@@ -1116,6 +1152,7 @@
       }
 
       renderDeviceList();
+      updateCameraButtonUI();
 
       if (shouldLog) {
         log(`Viewing stream from: ${dev?.name || deviceId}`, 'info');
@@ -1190,7 +1227,7 @@
               <span class="device-chip" id="card-bitrate-${dev.id}">⚡ <strong>${currentBitrate} kbps</strong></span>
               <span class="device-chip" id="card-fps-${dev.id}">⏱️ <strong>${currentFps} fps</strong></span>
               <span class="device-chip">🎙️ <strong>AAC Voice</strong></span>
-              ${dev.cameraAllowed ? `<span class="device-chip">📷 <strong>Cam ${dev.cameraFacing || 'front'}</strong></span>` : ''}
+              ${dev.cameraAllowed ? `<span class="device-chip" style="cursor: pointer;" onclick="event.stopPropagation(); triggerSwitchCamera('${dev.id}')" title="Click to switch camera between Front and Back">📷 <strong>Cam: ${(dev.cameraFacing || 'front').toUpperCase()} ⇄</strong></span>` : ''}
             </div>
 
             <div class="device-card-footer">
@@ -1215,6 +1252,7 @@
         log('Android device stream active', 'success');
         if (metadata) updateDeviceInfo(metadata);
         updateAudioButtonUI();
+        updateCameraButtonUI();
       } else {
         deviceBadge.className = 'status-badge';
         deviceStatusText.textContent = 'Device Offline';
@@ -1229,6 +1267,7 @@
         if (audioSub) audioSub.textContent = 'Voice Stream Idle';
         resVal.textContent = '-- x --';
         deviceModelVal.textContent = 'Waiting for device...';
+        updateCameraButtonUI();
         log('Device is offline or disconnected', 'warn');
       }
     }
@@ -1333,6 +1372,75 @@
       };
     }
 
+    // Camera Front/Back Switch Handler
+    function updateCameraButtonUI() {
+      if (!btnSwitchCamera || !cameraSwitchText) return;
+      const dev = knownDevices.find(d => d.id === selectedDeviceId);
+      if (!dev) {
+        btnSwitchCamera.disabled = true;
+        cameraSwitchText.textContent = 'Cam: Offline';
+        btnSwitchCamera.title = 'No active device connected';
+        return;
+      }
+
+      const facing = (dev.cameraFacing || 'front').toLowerCase();
+      const isFront = facing === 'front';
+      const currentLabel = isFront ? 'Front' : 'Back';
+      const nextLabel = isFront ? 'Back' : 'Front';
+
+      if (dev.cameraAllowed === false) {
+        btnSwitchCamera.disabled = true;
+        cameraSwitchText.textContent = 'Cam: Disabled';
+        btnSwitchCamera.title = 'Camera permission not granted on streamer device';
+      } else {
+        btnSwitchCamera.disabled = false;
+        cameraSwitchText.textContent = `Cam: ${currentLabel} ⇄ ${nextLabel}`;
+        btnSwitchCamera.title = `Currently streaming ${currentLabel} camera. Click to switch to ${nextLabel} camera.`;
+      }
+    }
+
+    function triggerSwitchCamera(deviceId = null) {
+      const targetDevId = deviceId || selectedDeviceId;
+      if (!targetDevId) {
+        alert('No streaming device selected');
+        return;
+      }
+      const dev = knownDevices.find(d => d.id === targetDevId);
+      if (dev && dev.cameraAllowed === false) {
+        alert('Camera permission is not granted on the streamer device.');
+        return;
+      }
+
+      const currentFacing = (dev?.cameraFacing || 'front').toLowerCase();
+      const nextFacing = currentFacing === 'front' ? 'back' : 'front';
+
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'SWITCH_CAMERA',
+          deviceId: targetDevId,
+          targetFacing: nextFacing
+        }));
+
+        // Optimistically update device facing until confirmation
+        if (dev) {
+          dev.cameraFacing = nextFacing;
+        }
+        if (targetDevId === selectedDeviceId) {
+          updateCameraButtonUI();
+        }
+        renderDeviceList();
+        log(`Requested camera switch to ${nextFacing.toUpperCase()} on ${dev?.name || targetDevId}`, 'info');
+      } else {
+        alert('Not connected to relay server');
+      }
+    }
+
+    if (btnSwitchCamera) {
+      btnSwitchCamera.onclick = () => {
+        triggerSwitchCamera(selectedDeviceId);
+      };
+    }
+
     // Recording feature using MediaStream capture (video + voice audio)
     let mediaRecorder = null;
     let recordedChunks = [];
@@ -1398,6 +1506,9 @@
         btnRecord.classList.remove('btn-danger');
       }
     };
+
+    // Initialize camera switch button state
+    updateCameraButtonUI();
 
     // Start viewer connection
     connectViewerWs();
