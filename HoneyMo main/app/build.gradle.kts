@@ -26,6 +26,34 @@ android {
     buildFeatures {
         compose = true
     }
+
+    signingConfigs {
+        create("release") {
+            val keystoreFile = file("release.keystore")
+            if (keystoreFile.exists()) {
+                storeFile = keystoreFile
+                storePassword = project.findProperty("HONEYMO_STORE_PASSWORD") as String? ?: "honeymo123"
+                keyAlias = project.findProperty("HONEYMO_KEY_ALIAS") as String? ?: "honeymo"
+                keyPassword = project.findProperty("HONEYMO_KEY_PASSWORD") as String? ?: "honeymo123"
+            } else {
+                initWith(getByName("debug"))
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro"
+            )
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("debug")
+        }
+    }
 }
 
 dependencies {
