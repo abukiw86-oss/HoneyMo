@@ -64,4 +64,26 @@ object SessionPreferences {
     fun getCameraFacing(context: Context): String {
         return getPrefs(context).getString(KEY_CAMERA_FACING, CAMERA_FACING_FRONT) ?: CAMERA_FACING_FRONT
     }
+
+    private const val KEY_USERNAME = "key_username"
+    private const val KEY_AGENT_ENABLED = "key_agent_enabled"
+
+    // Username storage
+    fun getUsername(context: Context): String {
+        return getPrefs(context).getString(KEY_USERNAME, "User") ?: "User"
+    }
+    fun setUsername(context: Context, username: String) {
+        getPrefs(context).edit().putString(KEY_USERNAME, username).commit()
+    }
+    fun hasUsername(context: Context): Boolean {
+        return getPrefs(context).contains(KEY_USERNAME)
+    }
+
+    // Agent state
+    fun setAgentEnabled(context: Context, enabled: Boolean) {
+        getPrefs(context).edit().putBoolean(KEY_AGENT_ENABLED, enabled).commit()
+    }
+    fun isAgentEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_AGENT_ENABLED, false)
+    }
 }

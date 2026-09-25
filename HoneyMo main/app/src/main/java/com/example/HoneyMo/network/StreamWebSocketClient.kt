@@ -2,6 +2,7 @@ package com.example.HoneyMo.network
 
 import android.os.Build
 import android.util.Log
+import com.example.HoneyMo.agent.AgentCommand
 import kotlinx.coroutines.*
 import okhttp3.*
 import okio.ByteString.Companion.toByteString
@@ -15,6 +16,7 @@ class StreamWebSocketClient(
     private val height: Int,
     private val fps: Int,
     private val bitrate: Int,
+    private val username: String = "User",
     private val cameraStatusProvider: (() -> Triple<Boolean, String, Boolean>)? = null,
     private val listener: StreamListener
 ) {
@@ -25,11 +27,18 @@ class StreamWebSocketClient(
         fun onKeyframeRequested()
         fun onCameraSwitchRequested(targetFacing: String?)
         fun onError(error: String)
+
+        // ---- AI Agent callbacks (default no-op implementations keep existing callers working) ----
+        fun onScreenshotRequested() {}
+        fun onCommandReceived(command: AgentCommand) {}
+        fun onTtsTextReceived(text: String) {}
+        fun onAgentStatusReceived(status: String, message: String) {}
     }
 
     companion object {
         private const val TAG = "StreamWS"
         private const val MAX_QUEUE_SIZE_BYTES = 128 * 1024 // 128 KB (CBR 1Mbps: caps buffering latency to ~1s)
+        private const val MAX_VOICE_QUEUE_BYTES = 512 * 1024 // 512 KB for raw PCM voice chunks
     }
 
     private var client: OkHttpClient = OkHttpClient.Builder()
@@ -101,6 +110,35 @@ class StreamWebSocketClient(
                             }
                             ws.send(pong.toString())
                         }
+
+                        // ---- AI Agent messages from server ----
+
+                        "SCREENSHOT_REQUEST" -> {
+                            Log.d(TAG, "Server requested on-demand screenshot")
+                            listener.onScreenshotRequested()
+                        }
+                        "COMMAND" -> {
+                            Log.d(TAG, "Received COMMAND from server: action=${json.optString("action")}")
+                            try {
+                                val command = AgentCommand.fromJson(json)
+                                listener.onCommandReceived(command)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "Failed to parse COMMAND: ${e.message}")
+                            }
+                        }
+                        "TTS_TEXT" -> {
+                            val text = json.optString("text")
+                            if (text.isNotBlank()) {
+                                Log.d(TAG, "Received TTS_TEXT: ${text.take(60)}")
+                                listener.onTtsTextReceived(text)
+                            }
+                        }
+                        "AGENT_STATUS" -> {
+                            val status = json.optString("status", "IDLE")
+                            val message = json.optString("message", "")
+                            Log.d(TAG, "Agent status: $status — $message")
+                            listener.onAgentStatusReceived(status, message)
+                        }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Failed to parse message: ${e.message}")
@@ -153,6 +191,7 @@ class StreamWebSocketClient(
             put("type", "INIT")
             put("deviceId", deviceId)
             put("deviceName", "${Build.MANUFACTURER} ${Build.MODEL}")
+            put("username", username)   // ← Jarvis: attach username
             put("width", width)
             put("height", height)
             put("fps", fps)
@@ -163,7 +202,7 @@ class StreamWebSocketClient(
             put("cameraActive", cameraActive)
         }
         webSocket?.send(meta.toString())
-        Log.d(TAG, "Sent INIT metadata: allowed=$cameraAllowed, facing=$cameraFacing, active=$cameraActive")
+        Log.d(TAG, "Sent INIT metadata: user=$username, allowed=$cameraAllowed, facing=$cameraFacing, active=$cameraActive")
     }
 
     fun sendCameraStatus(cameraAllowed: Boolean, cameraFacing: String, cameraActive: Boolean) {
@@ -188,6 +227,64 @@ class StreamWebSocketClient(
         }
 
         return ws.send(data.toByteString(0, data.size))
+    }
+
+    // ---- AI Agent send methods ----
+
+    /** Signal that the user has started speaking — server begins buffering audio */
+    fun sendVoiceStart() {
+        val payload = JSONObject().apply {
+            put("type", "VOICE_START")
+            put("username", username)
+        }
+        webSocket?.send(payload.toString())
+        Log.d(TAG, "Sent VOICE_START")
+    }
+
+    /**
+     * Send a raw PCM audio chunk (16-bit mono 44100Hz) to the server for STT.
+     * These are NOT HMA1-wrapped — they are raw binary PCM.
+     */
+    fun sendVoiceChunk(pcmData: ByteArray): Boolean {
+        val ws = webSocket ?: return false
+        if (!isConnected.get()) return false
+        // Drop chunks if send queue is overloaded to avoid memory buildup
+        if (ws.queueSize() > MAX_VOICE_QUEUE_BYTES) {
+            Log.w(TAG, "Dropping voice PCM chunk — queue congested (${ws.queueSize()} bytes)")
+            return false
+        }
+        return ws.send(pcmData.toByteString(0, pcmData.size))
+    }
+
+    /** Signal that the user has stopped speaking — server triggers STT + AI pipeline */
+    fun sendVoiceEnd() {
+        val payload = JSONObject().apply {
+            put("type", "VOICE_END")
+            put("username", username)
+        }
+        webSocket?.send(payload.toString())
+        Log.d(TAG, "Sent VOICE_END")
+    }
+
+    /** Send a compressed JPEG screenshot to the server in response to SCREENSHOT_REQUEST */
+    fun sendScreenshotData(jpegBytes: ByteArray): Boolean {
+        val ws = webSocket ?: return false
+        if (!isConnected.get()) return false
+        val sent = ws.send(jpegBytes.toByteString(0, jpegBytes.size))
+        Log.d(TAG, "Sent SCREENSHOT_DATA: ${jpegBytes.size} bytes, queued=${sent}")
+        return sent
+    }
+
+    /** Report back to the server whether an AI command was executed successfully */
+    fun sendActionResult(success: Boolean, message: String, username: String) {
+        val payload = JSONObject().apply {
+            put("type", "ACTION_RESULT")
+            put("success", success)
+            put("message", message)
+            put("username", username)
+        }
+        webSocket?.send(payload.toString())
+        Log.d(TAG, "Sent ACTION_RESULT: success=$success, message=$message")
     }
 
     fun isConnected(): Boolean = isConnected.get()

@@ -5,6 +5,155 @@ const path = require('path');
 const os = require('os');
 const url = require('url');
 
+// ---- AI Agent: Orchestrator (Groq STT + LLaMA tool calling) ----
+const { processVoiceAndScreen, transcribeAudio } = require('./orchestrator');
+
+// Warn at startup if API key is missing
+if (!process.env.GROQ_API_KEY) {
+  console.warn('[Server] WARNING: GROQ_API_KEY is not set. AI agent features will not work.');
+}
+
+// ---- AI Agent: Convert raw PCM buffer to WAV (prepend 44-byte RIFF header) ----
+function pcmToWav(pcmBuffer, sampleRate = 44100, channels = 1, bitsPerSample = 16) {
+  const byteRate = sampleRate * channels * (bitsPerSample / 8);
+  const blockAlign = channels * (bitsPerSample / 8);
+  const dataSize = pcmBuffer.length;
+  const header = Buffer.alloc(44);
+
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);          // PCM chunk size
+  header.writeUInt16LE(1, 20);           // PCM format
+  header.writeUInt16LE(channels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
+}
+
+// ---- AI Agent: Parse HMA1 binary audio packet ----
+// Returns { type: 'config'|'data', ptsUs: Number, payload: Buffer } or null
+function parseHma1Packet(buffer) {
+  if (buffer.length < 17) return null;
+  if (buffer[0] !== 0x48 || buffer[1] !== 0x4D || buffer[2] !== 0x41 || buffer[3] !== 0x31) return null;
+  const type = buffer[4] === 0 ? 'config' : 'data';
+  const ptsUs = buffer.readBigInt64BE(5);
+  const payloadLen = buffer.readUInt32BE(13);
+  if (buffer.length < 17 + payloadLen) return null;
+  const payload = buffer.slice(17, 17 + payloadLen);
+  return { type, ptsUs: Number(ptsUs), payload };
+}
+
+// ---- AI Agent: Send a JSON message to a device WebSocket safely ----
+function sendToDevice(deviceRecord, payload) {
+  try {
+    if (deviceRecord?.ws?.readyState === WebSocket.OPEN) {
+      deviceRecord.ws.send(JSON.stringify(payload));
+    }
+  } catch (e) {
+    console.error('[Agent] sendToDevice error:', e.message);
+  }
+}
+
+// ---- AI Agent: Full pipeline — STT → Screenshot → LLM → Command → TTS ----
+async function runAgentPipeline(deviceRecord) {
+  const { id: deviceId, username } = deviceRecord;
+
+  deviceRecord.isCollectingVoice = false;
+  sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'THINKING', message: 'Processing your request...' });
+
+  try {
+    // 1. Concatenate buffered PCM chunks and wrap as WAV
+    const pcmBuffer = Buffer.concat(deviceRecord.audioChunks || []);
+    deviceRecord.audioChunks = [];
+
+    if (pcmBuffer.length < 1024) {
+      console.log(`[Agent][${deviceId}] Audio too short — skipping STT`);
+      sendToDevice(deviceRecord, { type: 'TTS_TEXT', text: "I didn't catch that. Please try again." });
+      sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'IDLE', message: '' });
+      return;
+    }
+
+    const wavBuffer = pcmToWav(pcmBuffer);
+
+    // 2. Transcribe via Groq Whisper
+    console.log(`[Agent][${deviceId}] Sending ${wavBuffer.length} bytes to Whisper STT...`);
+    const transcript = await transcribeAudio(wavBuffer);
+
+    if (!transcript || transcript.trim().length === 0) {
+      console.log(`[Agent][${deviceId}] Empty transcript — skipping`);
+      sendToDevice(deviceRecord, { type: 'TTS_TEXT', text: "I couldn't understand that. Could you say it again?" });
+      sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'IDLE', message: '' });
+      return;
+    }
+
+    console.log(`[Agent][${deviceId}] Transcript: "${transcript}"`);
+
+    // 3. Request a screenshot from the device (5-second timeout)
+    let screenshotBase64 = null;
+    sendToDevice(deviceRecord, { type: 'SCREENSHOT_REQUEST' });
+
+    screenshotBase64 = await new Promise((resolve) => {
+      deviceRecord.isPendingScreenshot = true;
+      deviceRecord.screenshotResolve = resolve;
+      setTimeout(() => {
+        if (deviceRecord.isPendingScreenshot) {
+          deviceRecord.isPendingScreenshot = false;
+          deviceRecord.screenshotResolve = null;
+          console.log(`[Agent][${deviceId}] Screenshot timed out — proceeding without it`);
+          resolve(null);
+        }
+      }, 5000);
+    });
+
+    // 4. Call AI Orchestrator
+    const { action, parameters, thought } = await processVoiceAndScreen({
+      username: username || 'User',
+      transcript,
+      screenshotBase64,
+      conversationHistory: deviceRecord.conversationHistory || [],
+    });
+
+    console.log(`[Agent][${deviceId}] AI action: ${action}`, parameters);
+
+    // 5. Update conversation history (rolling window of 10)
+    deviceRecord.conversationHistory = deviceRecord.conversationHistory || [];
+    deviceRecord.conversationHistory.push({ role: 'user', content: transcript });
+    deviceRecord.conversationHistory.push({ role: 'assistant', content: thought || action });
+    if (deviceRecord.conversationHistory.length > 20) {
+      deviceRecord.conversationHistory = deviceRecord.conversationHistory.slice(-20);
+    }
+
+    // 6. Dispatch result to device
+    if (action === 'speak_response') {
+      const text = parameters?.text || thought || 'Done.';
+      sendToDevice(deviceRecord, { type: 'TTS_TEXT', text });
+      sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'IDLE', message: '' });
+    } else {
+      sendToDevice(deviceRecord, {
+        type: 'COMMAND',
+        thought: thought || '',
+        action,
+        parameters: parameters || {},
+      });
+      sendToDevice(deviceRecord, { type: 'TTS_TEXT', text: 'Got it, executing that now.' });
+      sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'EXECUTING', message: action });
+    }
+
+  } catch (err) {
+    console.error(`[Agent][${deviceId}] Pipeline error:`, err.message);
+    sendToDevice(deviceRecord, { type: 'TTS_TEXT', text: 'Something went wrong. Please try again.' });
+    sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'IDLE', message: '' });
+  }
+}
+
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -188,7 +337,14 @@ wssDevice.on('connection', (ws, req) => {
       currentBitrateKbps: 0
     },
     _secondFrames: 0,
-    _secondBytes: 0
+    _secondBytes: 0,
+    // ---- AI Agent state ----
+    username: 'User',
+    conversationHistory: [],
+    audioChunks: [],
+    isCollectingVoice: false,
+    isPendingScreenshot: false,
+    screenshotResolve: null,
   };
 
   activeDevices.set(deviceId, deviceRecord);
@@ -245,6 +401,22 @@ wssDevice.on('connection', (ws, req) => {
         return;
       }
 
+      // ---- AI Agent: buffer raw PCM voice chunks from device ----
+      if (deviceRecord.isCollectingVoice) {
+        deviceRecord.audioChunks.push(Buffer.from(message));
+        return; // don't treat voice PCM as a video frame
+      }
+
+      // ---- AI Agent: resolve pending screenshot promise ----
+      if (deviceRecord.isPendingScreenshot && deviceRecord.screenshotResolve) {
+        const jpegBase64 = Buffer.from(message).toString('base64');
+        deviceRecord.isPendingScreenshot = false;
+        const resolve = deviceRecord.screenshotResolve;
+        deviceRecord.screenshotResolve = null;
+        resolve(jpegBase64);
+        return;
+      }
+
       deviceRecord.stats.framesReceived++;
       deviceRecord.stats.bytesReceived += message.length;
       deviceRecord._secondFrames++;
@@ -289,20 +461,22 @@ wssDevice.on('connection', (ws, req) => {
             activeDevices.set(deviceId, deviceRecord);
           }
           if (data.deviceName) deviceRecord.name = data.deviceName;
-          if (data.width) deviceRecord.width = data.width;
+          if (data.username)   deviceRecord.username = data.username; // ← AI Agent
+          if (data.width)  deviceRecord.width = data.width;
           if (data.height) deviceRecord.height = data.height;
-          if (data.fps) deviceRecord.fps = data.fps;
+          if (data.fps)    deviceRecord.fps = data.fps;
           if (data.bitrate) deviceRecord.bitrate = data.bitrate;
           if (data.cameraAllowed !== undefined) deviceRecord.cameraAllowed = Boolean(data.cameraAllowed);
-          if (data.cameraFacing !== undefined) deviceRecord.cameraFacing = data.cameraFacing;
-          if (data.cameraActive !== undefined) deviceRecord.cameraActive = Boolean(data.cameraActive);
+          if (data.cameraFacing  !== undefined) deviceRecord.cameraFacing  = data.cameraFacing;
+          if (data.cameraActive  !== undefined) deviceRecord.cameraActive  = Boolean(data.cameraActive);
 
-          console.log(`[Device] Registered ${deviceRecord.name} [${deviceId}] (${deviceRecord.width}x${deviceRecord.height} @ ${deviceRecord.fps}fps, camAllowed=${deviceRecord.cameraAllowed}, camFacing=${deviceRecord.cameraFacing})`);
+          console.log(`[Device] Registered ${deviceRecord.name} [${deviceId}] user="${deviceRecord.username}" (${deviceRecord.width}x${deviceRecord.height} @ ${deviceRecord.fps}fps)`);
           broadcastDeviceListToViewers();
+
         } else if (data.type === 'CAMERA_STATUS') {
           if (data.cameraAllowed !== undefined) deviceRecord.cameraAllowed = Boolean(data.cameraAllowed);
-          if (data.cameraFacing !== undefined) deviceRecord.cameraFacing = data.cameraFacing;
-          if (data.cameraActive !== undefined) deviceRecord.cameraActive = Boolean(data.cameraActive);
+          if (data.cameraFacing  !== undefined) deviceRecord.cameraFacing  = data.cameraFacing;
+          if (data.cameraActive  !== undefined) deviceRecord.cameraActive  = Boolean(data.cameraActive);
 
           console.log(`[Device] Camera status for ${deviceId}: allowed=${deviceRecord.cameraAllowed}, facing=${deviceRecord.cameraFacing}, active=${deviceRecord.cameraActive}`);
 
@@ -324,6 +498,28 @@ wssDevice.on('connection', (ws, req) => {
           });
 
           broadcastDeviceListToViewers();
+
+        // ---- AI Agent: voice command message handlers ----
+
+        } else if (data.type === 'VOICE_START') {
+          deviceRecord.audioChunks = [];
+          deviceRecord.isCollectingVoice = true;
+          if (data.username) deviceRecord.username = data.username;
+          console.log(`[Agent][${deviceId}] Voice capture started (user: ${deviceRecord.username})`);
+          sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'LISTENING', message: 'Listening...' });
+
+        } else if (data.type === 'VOICE_END') {
+          console.log(`[Agent][${deviceId}] Voice capture ended — ${deviceRecord.audioChunks.length} chunks buffered`);
+          // Run pipeline asynchronously so this message handler returns immediately
+          runAgentPipeline(deviceRecord).catch(err =>
+            console.error(`[Agent][${deviceId}] Unhandled pipeline error:`, err.message)
+          );
+
+        } else if (data.type === 'ACTION_RESULT') {
+          const success = data.success;
+          const resultMsg = data.message || '';
+          console.log(`[Agent][${deviceId}] ACTION_RESULT: success=${success} — ${resultMsg}`);
+          sendToDevice(deviceRecord, { type: 'AGENT_STATUS', status: 'IDLE', message: '' });
         }
       } catch (err) {
         console.error('[Device] Error parsing message:', err.message);
@@ -520,6 +716,21 @@ app.get('/api/status', (req, res) => {
     totalViewers: wssViewer.clients.size,
     uptime: process.uptime(),
     devices: getDeviceList()
+  });
+});
+
+// ---- AI Agent: conversation history and session status per device ----
+app.get('/api/agent/status/:deviceId', (req, res) => {
+  const dev = activeDevices.get(req.params.deviceId);
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+  res.json({
+    status: 'ok',
+    deviceId: dev.id,
+    username: dev.username || 'User',
+    isCollectingVoice: dev.isCollectingVoice || false,
+    isPendingScreenshot: dev.isPendingScreenshot || false,
+    conversationTurns: Math.floor((dev.conversationHistory || []).length / 2),
+    conversationHistory: (dev.conversationHistory || []).slice(-6), // last 3 exchanges
   });
 });
 

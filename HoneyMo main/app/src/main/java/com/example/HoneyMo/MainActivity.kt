@@ -54,7 +54,15 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlin.math.cos
 import kotlin.math.sin
-
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.ui.text.input.ImeAction
+import com.example.HoneyMo.agent.VoiceCommandManager
+import com.example.HoneyMo.service.AgentAccessibilityService
+import com.example.HoneyMo.service.ScreenCaptureService
 // Constant Stream Configuration
 private const val FIXED_SERVER_URL = "wss://honeymo-relay-server.onrender.com/ws/device"
 private const val FIXED_FPS = 15
@@ -133,6 +141,21 @@ fun ScreenCaptureApp(
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     val stats by ScreenCaptureService.statsFlow.collectAsState()
+
+    // ---- AI Agent: username gate ----
+    var showUsernameDialog by remember { mutableStateOf(!SessionPreferences.hasUsername(context)) }
+    var currentUsername by remember { mutableStateOf(SessionPreferences.getUsername(context)) }
+
+    if (showUsernameDialog) {
+        UsernameSetupDialog(
+            onConfirm = { name ->
+                SessionPreferences.setUsername(context, name.trim().ifBlank { "User" })
+                currentUsername = SessionPreferences.getUsername(context)
+                showUsernameDialog = false
+            }
+        )
+        return // don't render the main UI until username is set
+    }
 
     // Keep screen turned on while actively streaming
     val activity = context as? Activity
@@ -1041,6 +1064,13 @@ fun ScreenCaptureApp(
             modifier = Modifier.fillMaxWidth()
         )
 
+        // ---- AI Agent: Jarvis card (always visible at bottom of main screen) ----
+        JarvisAgentCard(
+            agentStatus = stats.agentStatus,
+            username = currentUsername,
+            isServiceActive = isServiceActive
+        )
+
         Spacer(modifier = Modifier.height(16.dp))
     }
 }
@@ -1611,5 +1641,266 @@ fun CustomBarChartIcon(modifier: Modifier = Modifier) {
             topLeft = Offset(w * 0.72f, h * 0.25f),
             size = Size(w * 0.24f, h * 0.75f)
         )
+    }
+}
+
+// =============================================================================
+// ---- AI AGENT: Username Setup Dialog ----
+// =============================================================================
+
+/**
+ * First-run dialog that asks the user for their display name.
+ * The name is stored in SharedPreferences and attached to all AI sessions.
+ */
+@Composable
+fun UsernameSetupDialog(onConfirm: (String) -> Unit) {
+    var nameInput by remember { mutableStateOf("") }
+
+    AlertDialog(
+        onDismissRequest = { /* Cannot dismiss — name is required */ },
+        containerColor = Color(0xFF101726),
+        title = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    text = "👋 Welcome to HoneyMo",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 18.sp,
+                    color = Color.White
+                )
+                Text(
+                    text = "What should Jarvis call you?",
+                    fontSize = 13.sp,
+                    color = Color(0xFF94A3B8)
+                )
+            }
+        },
+        text = {
+            OutlinedTextField(
+                value = nameInput,
+                onValueChange = { nameInput = it },
+                placeholder = { Text("Your name", color = Color(0xFF64748B)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = {
+                    if (nameInput.isNotBlank()) onConfirm(nameInput)
+                }),
+                colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color(0xFF6366F1),
+                    unfocusedBorderColor = Color(0xFF1A2638),
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color.White,
+                    cursorColor = Color(0xFF6366F1)
+                )
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = { if (nameInput.isNotBlank()) onConfirm(nameInput) },
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF6366F1)),
+                enabled = nameInput.isNotBlank()
+            ) {
+                Text("Let's go →", fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = { onConfirm("User") }) {
+                Text("Skip", color = Color(0xFF64748B))
+            }
+        }
+    )
+}
+
+// =============================================================================
+// ---- AI AGENT: Jarvis Agent Card UI ----
+// =============================================================================
+
+/**
+ * Card shown in the main screen below the streaming controls.
+ * Displays agent status, an enable toggle, and a mic button to trigger voice commands.
+ */
+@Composable
+fun JarvisAgentCard(
+    agentStatus: String,
+    username: String,
+    isServiceActive: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
+
+    var isAgentEnabled by remember { mutableStateOf(SessionPreferences.isAgentEnabled(context)) }
+    var isListening by remember { mutableStateOf(false) }
+
+    // Colours and emoji per agent status
+    val (statusEmoji, statusColor) = when (agentStatus) {
+        "LISTENING"  -> "👂" to Color(0xFF10B981)
+        "THINKING"   -> "🤔" to Color(0xFFF59E0B)
+        "EXECUTING"  -> "⚡" to Color(0xFFF97316)
+        "SPEAKING"   -> "🔊" to Color(0xFF38BDF8)
+        else          -> "🎙️" to Color(0xFF64748B)
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF101726)),
+        shape = RoundedCornerShape(20.dp),
+        border = BorderStroke(1.dp, Color(0xFF1A2638)),
+        modifier = modifier.fillMaxWidth()
+    ) {
+        Column(
+            modifier = Modifier.padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            // Header row
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text("🤖", fontSize = 18.sp)
+                    Column {
+                        Text(
+                            text = "JARVIS AI AGENT",
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF6366F1),
+                            letterSpacing = 0.5.sp
+                        )
+                        Text(
+                            text = "Hello, $username",
+                            fontSize = 11.sp,
+                            color = Color(0xFF94A3B8)
+                        )
+                    }
+                }
+
+                // Enable / disable toggle
+                Switch(
+                    checked = isAgentEnabled,
+                    onCheckedChange = { enabled ->
+                        isAgentEnabled = enabled
+                        SessionPreferences.setAgentEnabled(context, enabled)
+                    },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color.White,
+                        checkedTrackColor = Color(0xFF6366F1),
+                        uncheckedThumbColor = Color(0xFF64748B),
+                        uncheckedTrackColor = Color(0xFF1A2638)
+                    )
+                )
+            }
+
+            // Status pill
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF0C1322))
+                        .border(BorderStroke(1.dp, Color(0xFF1E293B)), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(statusEmoji, fontSize = 14.sp)
+                        Text(
+                            text = agentStatus.ifBlank { "IDLE" },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = statusColor,
+                            letterSpacing = 0.5.sp
+                        )
+                    }
+                }
+
+                if (!isAgentEnabled) {
+                    Text(
+                        text = "Agent disabled",
+                        fontSize = 11.sp,
+                        color = Color(0xFF64748B)
+                    )
+                }
+            }
+
+            // Accessibility service warning
+            val accessibilityEnabled = AgentAccessibilityService.instance != null
+            if (isAgentEnabled && !accessibilityEnabled) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Color(0xFF1C1208))
+                        .border(BorderStroke(1.dp, Color(0xFF854D0E)), RoundedCornerShape(10.dp))
+                        .padding(10.dp)
+                        .clickable {
+                            val intent = android.content.Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                            intent.flags = android.content.Intent.FLAG_ACTIVITY_NEW_TASK
+                            context.startActivity(intent)
+                        }
+                ) {
+                    Text(
+                        text = "⚠️  Tap here to enable Jarvis Assistant in Accessibility Settings",
+                        fontSize = 12.sp,
+                        color = Color(0xFFFACC15),
+                        fontWeight = FontWeight.Medium
+                    )
+                }
+            }
+
+            // Mic button
+            if (isAgentEnabled && isServiceActive) {
+                Button(
+                    onClick = {
+                        if (!isListening) {
+                            isListening = true
+                            val service = ScreenCaptureService.instance
+                            if (service != null) {
+                                val wsClient = service.let {
+                                    // Access internal wsClient via the agent's voiceCommandManager
+                                    // VoiceCommandManager is managed by FloatingOverlayService
+                                    // Here we start it via a broadcast
+                                }
+                                val intent = android.content.Intent("com.example.HoneyMo.VOICE_COMMAND_START")
+                                context.sendBroadcast(intent)
+                                coroutineScope.launch {
+                                    kotlinx.coroutines.delay(5000) // max 5s listening
+                                    isListening = false
+                                }
+                            }
+                        } else {
+                            isListening = false
+                            val intent = android.content.Intent("com.example.HoneyMo.VOICE_COMMAND_STOP")
+                            context.sendBroadcast(intent)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (isListening) Color(0xFF7F1D1D) else Color(0xFF1E1B4B)
+                    )
+                ) {
+                    Text(
+                        text = if (isListening) "🔴  Listening... (tap to stop)" else "🎙️  Tap to speak a command",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = if (isListening) Color(0xFFFCA5A5) else Color(0xFFA5B4FC)
+                    )
+                }
+            } else if (isAgentEnabled && !isServiceActive) {
+                Text(
+                    text = "Start the screen stream first to use voice commands",
+                    fontSize = 12.sp,
+                    color = Color(0xFF64748B),
+                    fontWeight = FontWeight.Medium
+                )
+            }
+        }
     }
 }

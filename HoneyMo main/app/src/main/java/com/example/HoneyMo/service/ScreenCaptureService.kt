@@ -8,9 +8,12 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
 import android.hardware.Camera
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
+import android.media.ImageReader
 import android.media.MediaCodec
 import android.media.MediaCodecInfo
 import android.media.MediaFormat
@@ -21,11 +24,13 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.*
+import android.speech.tts.TextToSpeech
 import android.util.Log
 import android.view.Surface
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.example.HoneyMo.MainActivity
+import com.example.HoneyMo.agent.AgentCommand
 import com.example.HoneyMo.facecam.CameraStreamManager
 import com.example.HoneyMo.facecam.StreamFrameCompositor
 import com.example.HoneyMo.network.StreamWebSocketClient
@@ -35,7 +40,9 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
+import java.util.Locale
 import java.util.concurrent.atomic.AtomicBoolean
 
 class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
@@ -75,11 +82,16 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             val framesSent: Long = 0,
             val bytesSent: Long = 0,
             val currentFps: Int = 0,
-            val errorMsg: String? = null
+            val errorMsg: String? = null,
+            // ---- AI Agent ----
+            val agentStatus: String = "IDLE"
         )
 
         private val _statsFlow = MutableStateFlow(StreamStats())
         val statsFlow: StateFlow<StreamStats> = _statsFlow.asStateFlow()
+
+        // ---- AI Agent: shared status flow observed by FloatingOverlayService ----
+        val agentStatusFlow = MutableStateFlow("IDLE")
 
         var isRunning = false
             private set
@@ -114,6 +126,12 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
     private var fpsCounter = 0
     private var statsJob: Job? = null
 
+    // ---- AI Agent: on-demand screenshot and TTS ----
+    private var screenshotImageReader: ImageReader? = null
+    private var tts: TextToSpeech? = null
+    private var username: String = "User"
+
+
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             when (intent.action) {
@@ -140,6 +158,16 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             cameraFacing = SessionPreferences.getCameraFacing(applicationContext),
             isFaceCamActive = SessionPreferences.isFaceCamEnabled(applicationContext)
         )
+        // ---- AI Agent: load username and start TTS engine ----
+        username = SessionPreferences.getUsername(applicationContext)
+        tts = TextToSpeech(applicationContext) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts?.language = Locale.US
+                Log.d(TAG, "TextToSpeech engine ready for Jarvis")
+            } else {
+                Log.w(TAG, "TextToSpeech init failed: $status")
+            }
+        }
         createNotificationChannel()
         BootReceiver.createRecoveryNotificationChannel(this)
         setupWakeLock()
@@ -362,6 +390,7 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                     height = height,
                     fps = fps,
                     bitrate = bitrate,
+                    username = username,
                     cameraStatusProvider = {
                         val hasPermission = ContextCompat.checkSelfPermission(this@ScreenCaptureService, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
                         val isCamActive = cameraStreamManager?.isRunning() == true || (SessionPreferences.isFaceCamEnabled(applicationContext) && hasPermission)
@@ -999,11 +1028,123 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
         Log.d(TAG, "Capture pipeline stopped cleanly")
     }
 
+
+    // =========================================================================
+    // ---- AI AGENT: StreamListener overrides for agent commands ----
+    // =========================================================================
+
+    override fun onScreenshotRequested() {
+        Log.d(TAG, "onScreenshotRequested: capturing on-demand JPEG")
+        captureScreenshot { jpegBytes ->
+            if (jpegBytes != null) {
+                wsClient?.sendScreenshotData(jpegBytes)
+                Log.d(TAG, "Screenshot dispatched: ${jpegBytes.size} bytes")
+            } else {
+                Log.w(TAG, "Screenshot capture failed — no bytes")
+            }
+        }
+    }
+
+    override fun onCommandReceived(command: AgentCommand) {
+        Log.d(TAG, "onCommandReceived: action=${command.action}")
+        serviceScope.launch {
+            val agentService = AgentAccessibilityService.instance
+            if (agentService == null) {
+                Log.w(TAG, "AgentAccessibilityService not running — cannot execute command")
+                wsClient?.sendActionResult(false, "Accessibility Service is not enabled. Please enable Jarvis Assistant in Settings > Accessibility.", username)
+                speakText("Please enable Jarvis in the Accessibility settings to let me control your device.")
+                return@launch
+            }
+            val success = agentService.executeCommand(command)
+            wsClient?.sendActionResult(success, if (success) "Action completed" else "Action failed", username)
+        }
+    }
+
+    override fun onTtsTextReceived(text: String) {
+        Log.d(TAG, "onTtsTextReceived: ${text.take(60)}")
+        speakText(text)
+        agentStatusFlow.value = "SPEAKING"
+        _statsFlow.value = _statsFlow.value.copy(agentStatus = "SPEAKING")
+    }
+
+    override fun onAgentStatusReceived(status: String, message: String) {
+        Log.d(TAG, "onAgentStatusReceived: $status — $message")
+        agentStatusFlow.value = status
+        _statsFlow.value = _statsFlow.value.copy(agentStatus = status)
+    }
+
+    // ---- AI Agent: speak text using Android built-in TTS (zero cost) ----
+    fun speakText(text: String) {
+        if (text.isBlank()) return
+        tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "jarvis_tts_${System.currentTimeMillis()}")
+        Log.d(TAG, "TTS speaking: ${text.take(60)}")
+    }
+
+    /**
+     * Capture a single JPEG frame from the active VirtualDisplay surface using PixelCopy.
+     * Scales result down to max 720p and compresses at JPEG quality 70.
+     * Calls [callback] with byte array on success, or null on failure.
+     * API 26+ required — same min SDK as this project.
+     */
+    fun captureScreenshot(callback: (ByteArray?) -> Unit) {
+        val vd = virtualDisplay
+        if (vd == null) {
+            Log.w(TAG, "captureScreenshot: VirtualDisplay not active")
+            callback(null)
+            return
+        }
+
+        try {
+            // Create a bitmap matching the virtual display dimensions (already scaled by service)
+            val bitmapWidth  = _statsFlow.value.let { 720 }   // capped at 720p
+            val bitmapHeight = virtualDisplay?.let {
+                // Derive height from current stream aspect ratio stored in device record
+                val w = encoder?.outputFormat?.getInteger(MediaFormat.KEY_WIDTH) ?: 720
+                val h = encoder?.outputFormat?.getInteger(MediaFormat.KEY_HEIGHT) ?: 1280
+                (720 * h.toFloat() / w.toFloat()).toInt().coerceAtLeast(1)
+            } ?: 1280
+
+            val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val surface = vd.surface ?: run { callback(null); return }
+                PixelCopy.request(surface, bitmap, { result ->
+                    if (result == PixelCopy.SUCCESS) {
+                        val baos = ByteArrayOutputStream()
+                        bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
+                        bitmap.recycle()
+                        callback(baos.toByteArray())
+                    } else {
+                        Log.w(TAG, "PixelCopy failed: result=$result")
+                        bitmap.recycle()
+                        callback(null)
+                    }
+                }, Handler(Looper.getMainLooper()))
+            } else {
+                bitmap.recycle()
+                callback(null)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "captureScreenshot exception: ${e.message}", e)
+            callback(null)
+        }
+    }
+
+    // =========================================================================
+
     override fun onDestroy() {
         try {
             unregisterReceiver(screenReceiver)
         } catch (e: Exception) {
             Log.e(TAG, "Error unregistering screenReceiver: ${e.message}")
+        }
+        // ---- AI Agent: release TTS ----
+        try {
+            tts?.stop()
+            tts?.shutdown()
+            tts = null
+        } catch (e: Exception) {
+            Log.e(TAG, "Error releasing TTS: ${e.message}")
         }
         cameraStreamManager?.stop()
         cameraStreamManager = null
