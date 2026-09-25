@@ -60,9 +60,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.ui.text.input.ImeAction
-import com.example.HoneyMo.agent.VoiceCommandManager
 import com.example.HoneyMo.service.AgentAccessibilityService
-import com.example.HoneyMo.service.ScreenCaptureService
 // Constant Stream Configuration
 private const val FIXED_SERVER_URL = "wss://honeymo-relay-server.onrender.com/ws/device"
 private const val FIXED_FPS = 15

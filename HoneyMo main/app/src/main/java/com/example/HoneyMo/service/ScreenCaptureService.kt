@@ -26,6 +26,7 @@ import android.net.NetworkRequest
 import android.os.*
 import android.speech.tts.TextToSpeech
 import android.util.Log
+import android.view.PixelCopy
 import android.view.Surface
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -1081,6 +1082,12 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
     }
 
     /**
+     * Public accessor for the WebSocket client — used by FloatingOverlayService
+     * to create a VoiceCommandManager without accessing private fields.
+     */
+    fun getWsClient(): com.example.HoneyMo.network.StreamWebSocketClient? = wsClient
+
+    /**
      * Capture a single JPEG frame from the active VirtualDisplay surface using PixelCopy.
      * Scales result down to max 720p and compresses at JPEG quality 70.
      * Calls [callback] with byte array on success, or null on failure.
@@ -1107,9 +1114,9 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
             val bitmap = Bitmap.createBitmap(bitmapWidth, bitmapHeight, Bitmap.Config.ARGB_8888)
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val surface = vd.surface ?: run { callback(null); return }
-                PixelCopy.request(surface, bitmap, { result ->
-                    if (result == PixelCopy.SUCCESS) {
+                val surface = vd.surface ?: run { bitmap.recycle(); callback(null); return }
+                val listener = android.view.PixelCopy.OnPixelCopyFinishedListener { result ->
+                    if (result == android.view.PixelCopy.SUCCESS) {
                         val baos = ByteArrayOutputStream()
                         bitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos)
                         bitmap.recycle()
@@ -1119,7 +1126,8 @@ class ScreenCaptureService : Service(), StreamWebSocketClient.StreamListener {
                         bitmap.recycle()
                         callback(null)
                     }
-                }, Handler(Looper.getMainLooper()))
+                }
+                android.view.PixelCopy.request(surface, bitmap, listener, Handler(Looper.getMainLooper()))
             } else {
                 bitmap.recycle()
                 callback(null)
